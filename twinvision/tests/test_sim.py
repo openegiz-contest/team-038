@@ -218,6 +218,53 @@ def test_block_model_uses_geomet_distributions():
     assert all(min(bwi) - 0.01 <= b.bwi <= max(bwi) + 0.01 for b in north.blocks)
 
 
+def test_energy_balance_every_step_including_load_shedding():
+    sim = run(MineSim(9), 1)
+    sim.set_scenarios({"energy_cap": {"cap_kw": 26000.0}, "modules_off": ["energy"]})
+    worst = 0.0
+    for _ in range(2 * 3600):
+        sim.step(1.0)
+        worst = max(worst, abs(sim.energy_balance()))
+    assert worst < 1e-6
+    assert sim.energy.violations >= 1                           # the plant was shed at least once
+
+
+def test_energy_module_beats_load_shedding():
+    cap = {"energy_cap": {"cap_kw": 28000.0}}
+    on, off = paired(cap, 2, 4)[0], paired({**cap, "modules_off": ["energy"]}, 2, 4)[0]
+    assert on.energy.violations == 0 and off.energy.violations > 0
+    assert on.plant_t > off.plant_t
+    assert any("throttled" in x for _, x in on.energy.log)
+
+
+def test_dispatcher_off_uses_fixed_allocation_and_loses_grade_control():
+    live, base = paired({"modules_off": ["dispatcher"]}, 1, 5)
+    assert all(t.dest[1] in ("ex-01", "ex-02") for t in live.trucks[:4]
+               if t.dest and t.dest[0] == "excavator")
+    assert live.dispatcher.blend_diverts < base.dispatcher.blend_diverts
+    kl, kb = live.kpis(), base.kpis()
+    mid = (P.PLANT["grade_min"] + P.PLANT["grade_max"]) / 2
+    assert abs(kl["plant_feed_grade"] - mid) > abs(kb["plant_feed_grade"] - mid)
+    assert kl["mean_queue_min"] > kb["mean_queue_min"]
+
+
+def test_maintenance_off_means_run_to_failure():
+    live, base = MineSim(42), MineSim(42)
+    live.set_scenarios({"modules_off": ["maintenance"]})
+    run(live, 24)
+    run(base, 24)
+    units = lambda s: [s.crusher, *s.excavators, *s.trucks]
+    assert sum(u.health.pms for u in units(live)) == 0 and not live.maintenance.log
+    assert sum(u.health.pms for u in units(base)) > 0
+    assert sum(u.health.failures for u in units(live)) > sum(u.health.failures for u in units(base))
+
+
+def test_module_decision_logs_explain_choices():
+    sim = run(MineSim(42), 4)
+    assert sim.dispatcher.log and sim.maintenance.log
+    assert all(isinstance(t, int) and text for t, text in sim.dispatcher.log)
+
+
 def test_scenario_normalisation():
     feats = {
         "crusher_failure": {"properties": {"active": True}},
@@ -226,11 +273,13 @@ def test_scenario_normalisation():
         "hardness_spike": {"properties": {"active": True, "factor": 9, "clusters": ["blocks-north"]}},
         "fuel_shortage": {"properties": {"active": True, "resupply_lph": -5}},
         "energy_cap": {"properties": {"active": True, "cap_kw": "abc"}},
+        "maintenance_module": {"properties": {"enabled": False}},
+        "energy_module": {"properties": {"enabled": True}},
     }
     assert normalise(feats) == {"crusher_failure": True, "road_closure": ["s04"],
                                 "hardness_spike": {"factor": 2.5, "clusters": ["blocks-north"]},
                                 "fuel_shortage": {"resupply_lph": 0.0, "bay_stock_l": 8000.0},
-                                "energy_cap": {"cap_kw": 28000.0}}
+                                "energy_cap": {"cap_kw": 28000.0}, "modules_off": ["maintenance"]}
     assert normalise({}) == {}
     assert normalise(None) == {}
 
@@ -259,8 +308,8 @@ def test_feature_types_are_stable(name):
     types = {}
     for i in range(40):
         if i == 10:
-            sim.set_scenarios({"energy_cap": {"cap_kw": 25000.0}, "fuel_shortage": {"resupply_lph": 0.0,
-                                                                                      "bay_stock_l": 5000.0}})
+            sim.set_scenarios({"energy_cap": {"cap_kw": 25000.0}, "modules_off": ["energy", "dispatcher"],
+                               "fuel_shortage": {"resupply_lph": 0.0, "bay_stock_l": 5000.0}})
         run(sim, 0.25)
         for feat, props in snapshot(sim)[name].items():
             t = type(props["value"]).__name__

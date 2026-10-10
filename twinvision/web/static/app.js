@@ -388,7 +388,8 @@ function update() {
     icons["plant-feed"].g.querySelector(".body").setAttribute("fill", gs === "in_spec" ? "#22c55e" : gs === "starved" ? "#ef4444" : "#f59e0b");
     icons["plant-feed"].l1.textContent = `Plant ${fmt(V("plant-feed", "feed_tph"))} t/h`;
     const lim = V("plant-feed", "limited_by");
-    icons["plant-feed"].l2.textContent = `${fmt(V("plant-feed", "feed_grade"), 2)} % Cu ${gs?.replace("_", " ") || ""} · ${fmt((V("plant-feed", "power_kw") || 0) / 1000, 1)} MW${lim === "grid_cap" ? " · GRID CAP" : ""}`;
+    icons["plant-feed"].l2.textContent = `${fmt(V("plant-feed", "feed_grade"), 2)} % Cu ${gs?.replace("_", " ") || ""} · ${fmt((V("plant-feed", "power_kw") || 0) / 1000, 1)} MW${lim === "grid_cap" ? " · GRID CAP" : lim === "load_shed" ? " · LOAD SHED" : ""}`;
+    icons["plant-feed"].g.querySelector(".down-ring").style.display = lim === "load_shed" ? "" : "none";
   }
   if (icons["waste-dump"]) {
     icons["waste-dump"].l1.textContent = `Waste dump ${fmt(V("waste-dump", "tph"))} t/h`;
@@ -494,7 +495,12 @@ function header() {
   const okf = Math.abs(fl ?? 1) < 1e-2 && Math.abs(fb ?? 1) < 1e-2;
   $("#fuel").textContent = `${okf ? "✓" : "✗"} fuel balance ${fmt(fl, 3)} L`;
   $("#fuel").className = "badge " + (okf ? "ok" : "bad");
+  const el = V("mine", "energy_balance_residual_kwh"), eb = V("mine", "energy_balance_residual_kwh", "base");
+  const oke = Math.abs(el ?? 1) < 1e-2 && Math.abs(eb ?? 1) < 1e-2;
+  $("#energy").textContent = `${oke ? "✓" : "✗"} energy balance ${fmt(el, 3)} kWh`;
+  $("#energy").className = "badge " + (oke ? "ok" : "bad");
   const act = Object.entries(S.scenarios || {}).filter(([, p]) => p?.active).map(([k]) => STATIC.scenarios[k]?.label || k);
+  for (const [k, m] of Object.entries(STATIC.modules || {})) if (S.live[m.twin]?.module_enabled === false) act.push(`${m.label} OFF`);
   $("#active").textContent = act.length ? `what-if: ${act.join(", ")}` : "no what-if active";
   $("#active").className = "badge " + (act.length ? "warn" : "");
 }
@@ -514,21 +520,54 @@ function kpiTable() {
   }
 }
 
+const MOD_TEXT = {
+  dispatcher: ["Off: fixed truck-to-shovel allocation, all ore to the crusher, no blending, no fuel rationing.",
+    d => [["decisions", d.decisions_total], ["re-routes", d.reroutes_total], ["ore to ROM", d.ore_to_rom_total],
+      ["blend diversions", d.blend_diversions_total], ["trucks rationed", d.fuel_rationed_trucks]]],
+  maintenance: ["Off: run to failure, no planned maintenance.",
+    m => [["PM decisions", m.decisions_total], ["failures", m.failures_total], ["planned jobs", m.planned_total],
+      ["loss avoided", `${fmt(m.expected_loss_avoided_t)} t`]]],
+  energy: ["Off: no throttling; a 15-min block above a grid cap sheds the concentrator for 15 min.",
+    g => [["decisions", g.decisions_total], ["cap violations", g.cap_violations_total],
+      ["peak", `${fmt((g.peak_demand_kw || 0) / 1000, 1)} MW`], ["plant", g.plant_load_shed ? "SHED" : g.plant_throttled ? "throttled" : "normal"]]],
+};
+function hm(h) { const d = Math.floor(h / 24), hh = Math.floor(h % 24), mm = Math.floor((h * 60) % 60); return `d${d + 1} ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`; }
 function decisions() {
-  const D = $("#decisions"), d = S.live.dispatcher || {}, m = S.live.maintenance || {};
-  const items = [
-    ["dispatch", "Dispatcher", d.last_decision],
-    ["maint", "Maintenance planner", m.last_decision || "no maintenance decision yet"],
-    ["fuel", "Fuel", d.last_fuel_decision || "no rationing"],
-  ];
-  D.innerHTML = items.map(([c, t, x]) => `<div class="dec ${c}"><b>${t}</b><span></span></div>`).join("") +
-    `<div class="counters">
-      <span>dispatch decisions <b>${fmt(d.decisions_total)}</b></span><span>re-routes <b>${fmt(d.reroutes_total)}</b></span>
-      <span>ore to ROM <b>${fmt(d.ore_to_rom_total)}</b></span><span>blend diversions <b>${fmt(d.blend_diversions_total)}</b></span>
-      <span>PM decisions <b>${fmt(m.decisions_total)}</b></span><span>failures <b>${fmt(m.failures_total)}</b></span>
-      <span>loss avoided <b>${fmt(m.expected_loss_avoided_t)} t</b></span><span>trucks rationed <b>${fmt(d.fuel_rationed_trucks)}</b></span>
-    </div>`;
-  D.querySelectorAll(".dec span").forEach((s, i) => (s.textContent = items[i][2] || "–"));
+  const box = $("#modules");
+  for (const [name, meta] of Object.entries(STATIC.modules || {})) {
+    let card = $(`#mod-${name}`);
+    if (!card) {
+      card = html("div", { class: "mod", id: `mod-${name}` });
+      card.innerHTML = `<div class="t"><span>${meta.label}</span><label class="switch" title="switch the module on or off in the live twin"><input type="checkbox"><span></span></label></div>
+        <div class="muted small off-text"></div><ol></ol><div class="counters small"></div>`;
+      card.querySelector(".off-text").textContent = MOD_TEXT[name][0];
+      card.querySelector("input").addEventListener("change", e =>
+        call("POST", `/api/modules/${name}`, { enabled: e.target.checked }, `${meta.label} ${e.target.checked ? "on" : "off"} (live twin)`));
+      box.appendChild(card);
+    }
+    const tw = S.live[meta.twin] || {}, on = tw.module_enabled !== false;
+    card.classList.toggle("off", !on);
+    const inp = card.querySelector("input");
+    if (document.activeElement !== inp) inp.checked = on;
+    let log = [];
+    try { log = JSON.parse(tw.decision_log || "[]"); } catch (e) { /* keep empty */ }
+    const ol = card.querySelector("ol");
+    ol.innerHTML = "";
+    for (const e of log.slice().reverse()) {
+      const li = html("li");
+      li.appendChild(html("time", {}, hm(e.t_h)));
+      li.appendChild(document.createTextNode(e.text));
+      ol.appendChild(li);
+    }
+    if (!log.length) ol.innerHTML = `<li class="muted">${on ? "no decision yet" : "module off"}</li>`;
+    const cnt = card.querySelector(".counters");
+    cnt.innerHTML = "";
+    for (const [k, v] of MOD_TEXT[name][1](tw)) {
+      const sp = html("span", {}, `${k} `);
+      sp.appendChild(html("b", {}, typeof v === "number" ? fmt(v) : (v ?? "–")));
+      cnt.appendChild(sp);
+    }
+  }
 }
 
 let lastEventKey = "";

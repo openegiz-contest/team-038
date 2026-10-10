@@ -115,7 +115,10 @@ def definitions(sim, baseline=False):
     add("fuel-bay", "FuelBay", "mine", "Diesel fuel bay", capacity_l=P.FUEL_BAY["capacity_l"],
         spots=P.FUEL_BAY["spots"], normal_resupply_lph=P.FUEL_BAY["resupply_lph"], location=fac["workshop"],
         node="WS", supplies=[thing_id(t.id + sfx) for t in sim.trucks] + [thing_id("stockpile-rom" + sfx)])
-    add("power-grid", "PowerGrid", "mine", "Site electrical supply",
+    add("power-grid", "PowerGrid", "mine", "Site electrical supply and energy manager",
+        strategy=("energy module: under a grid cap, limit the concentrator to (cap - crusher - base load) / "
+                  "specific energy every step; without it, a 15-min block above the cap sheds the concentrator "
+                  "for 15 min"),
         demand_window_s=P.GRID["demand_window_s"],
         supplies=[thing_id("crusher-01" + sfx), thing_id("plant-feed" + sfx)])
     if not baseline:
@@ -144,7 +147,14 @@ def scenario_defaults():
         "low_grade_zone": {"properties": {"active": False, "factor": 0.6, "clusters": ["blocks-north"]}},
         "fuel_shortage": {"properties": {"active": False, "resupply_lph": 0.0, "bay_stock_l": 8000.0}},
         "energy_cap": {"properties": {"active": False, "cap_kw": 28000.0}},
+        "dispatcher_module": {"properties": {"enabled": True}},
+        "maintenance_module": {"properties": {"enabled": True}},
+        "energy_module": {"properties": {"enabled": True}},
     }
+
+
+def decision_log(log):
+    return f(json.dumps([{"t_h": round(t / 3600.0, 3), "text": x} for t, x in log]))
 
 
 def health_features(m, sim):
@@ -193,6 +203,8 @@ def snapshot(sim):
         "waste_total_t": f(r(sim.waste_t, 1), "t"),
         "mass_balance_residual_t": f(r(sim.mass_balance(), 6), "t"),
         "fuel_balance_residual_l": f(r(sim.fuel_balance(), 6), "L"),
+        "energy_balance_residual_kwh": f(r(sim.energy_balance(), 6), "kWh"),
+        "modules_off": f(",".join(m for m, on in sim.modules.items() if not on) or "none"),
         "trucks_queued": f(trucks_q, "trucks"),
         "active_scenarios": f(",".join(active) if active else "none"),
         "last_event": f(sim.events[-1][1] if sim.events else ""),
@@ -305,7 +317,8 @@ def snapshot(sim):
         "grade_status": f(status),
         "power_kw": f(r(sim.plant_kw, 1), "kW"),
         "capacity_tph": f(r(sim.plant_cap_tph, 1), "t/h"),
-        "limited_by": f("grid_cap" if sim.plant_cap_tph < P.PLANT["target_tph"] - 1 else
+        "limited_by": f("load_shed" if sim.energy.tripped() else
+                        "grid_cap" if sim.plant_cap_tph < P.PLANT["target_tph"] - 1 else
                         "feed" if sim.plant_tph < sim.plant_cap_tph - 1 else "none"),
         "tonnes_total": f(r(sim.plant_t, 1), "t"),
         "copper_t": f(r(sim.plant_cu_t, 2), "t"),
@@ -335,6 +348,8 @@ def snapshot(sim):
         "blend_diversions_total": f(d.blend_diverts, "loads"),
         "fuel_rationed_trucks": f(d.ration, "trucks"),
         "last_fuel_decision": f(d.fuel_note),
+        "module_enabled": f(sim.modules["dispatcher"]),
+        "decision_log": decision_log(d.log),
     }
     mp = sim.maintenance
     units = [sim.crusher, *sim.excavators, *sim.trucks]
@@ -349,6 +364,8 @@ def snapshot(sim):
         "failures_total": f(sum(u.health.failures for u in units), "failures"),
         "planned_total": f(sum(u.health.pms for u in units), "jobs"),
         "fleet_health_pct": f(r(sum(u.health.h for u in units) / len(units), 1), "%"),
+        "module_enabled": f(sim.modules["maintenance"]),
+        "decision_log": decision_log(mp.log),
     }
     burn = sim.k["fuel"].v
     net = burn - sim.resupply_lph()
@@ -374,6 +391,13 @@ def snapshot(sim):
         "cap_active": f(cap < float("inf")),
         "energy_total_mwh": f(r(sim.site_kwh / 1000.0, 3), "MWh"),
         "kwh_per_t": f(r(k["site_kwh_t"], 3), "kWh/t"),
+        "module_enabled": f(sim.modules["energy"]),
+        "plant_throttled": f(sim.energy.throttled),
+        "plant_load_shed": f(sim.energy.tripped()),
+        "cap_violations_total": f(sim.energy.violations, "events"),
+        "decisions_total": f(sim.energy.decisions, "decisions"),
+        "last_decision": f(sim.energy.last),
+        "decision_log": decision_log(sim.energy.log),
     }
     return out
 

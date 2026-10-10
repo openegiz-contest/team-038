@@ -1,4 +1,4 @@
-.PHONY: up down ps logs smoke clean example-mine example-mine-stop twinvision twinvision-stop twinvision-smoke twinvision-test twinvision-urls install uninstall status endpoints upgrade upload-build generate-data copy-build unity-demo check-secrets check-public-host
+.PHONY: up down ps logs smoke clean example-mine example-mine-stop twinvision twinvision-stop twinvision-smoke twinvision-test twinvision-twins twinvision-urls install uninstall status endpoints upgrade upload-build generate-data copy-build unity-demo check-secrets check-public-host
 
 # ---------------------------------------------------------------------------
 # Docker Compose deployment (laptops, CI, contest judges): deploy/compose/
@@ -69,6 +69,10 @@ twinvision-stop:
 ## End-to-end check of the TwinVision services on the running stack
 twinvision-smoke:
 	@bash twinvision/scripts/smoke.sh
+
+## List the TwinVision twins from Ditto and check them against twinvision/SCHEMA.md
+twinvision-twins:
+	$(COMPOSE_BASE) -f $(TV_COMPOSE) run --rm --no-deps twinvision-setup python -m twinvision.setup.check_twins
 
 ## TwinVision unit tests (mass balance, determinism, scenario propagation), in the image
 twinvision-test:

@@ -167,7 +167,7 @@ SUPPORT_FACTOR = 0.7           # affine support correction: 2 m assay -> 3,900 t
 DISPATCH = {
     "target_tph": {"ex-01": 1250.0, "ex-02": 1050.0, "ex-03": 4500.0},  # site plan, strip ratio ~2
     "deficit_weight_s": 900.0,
-    "grade_weight_s": 600.0,     # s of start time worth moving the feed grade a full half-band toward target   # s of expected-start-time a 100 % target deficit is worth
+    "grade_weight_s": 600.0,     # s of start time worth moving the feed grade a full half-band toward target
     "cos_high_frac": 0.65,       # above this COS level ore goes to the ROM pad
     "cos_reclaim_frac": 0.45,    # below this the loader reclaims ROM into the crusher
     "crusher_wait_max_s": 600.0,  # expected wait at the crusher above which ore goes to ROM
