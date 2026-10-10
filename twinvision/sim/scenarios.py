@@ -50,4 +50,13 @@ def normalise(features):
             cl = _ids(p.get("clusters"), CLUSTER_IDS)
             if cl:
                 sc[name] = {"factor": _num(p.get("factor"), default, lo, hi), "clusters": cl}
+    p = _props(features, "fuel_shortage")
+    if p.get("active"):
+        sc["fuel_shortage"] = {
+            "resupply_lph": _num(p.get("resupply_lph"), 0.0, 0.0, P.FUEL_BAY["resupply_lph"]),
+            "bay_stock_l": _num(p.get("bay_stock_l"), 8000.0, 0.0, P.FUEL_BAY["capacity_l"]),
+        }
+    p = _props(features, "energy_cap")
+    if p.get("active"):
+        sc["energy_cap"] = {"cap_kw": _num(p.get("cap_kw"), 28000.0, 5000.0, 60000.0)}
     return sc

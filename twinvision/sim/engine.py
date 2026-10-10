@@ -2,14 +2,19 @@ r"""Time-stepped simulation of the TwinVision Copper Pit.
 
 One MineSim is one copy of the mine. The service runs two in lockstep with
 the same seed: "live" (what-if scenarios applied) and "baseline" (never
-touched). Every entity draws from its own seeded random stream, so the two
+touched). Every entity draws from its own seeded random streams, so the two
 copies only diverge through the consequences of a scenario.
 
 Material flow (tonnes are conserved and audited every step):
 
   block cluster --excavator--> truck --> crusher pocket --crusher--> COS --> plant
-                                    \--> ROM pad --loader reclaim--> crusher pocket
-                                    \--> waste dump
+                                    +--> ROM pad --loader reclaim--> crusher pocket
+                                    +--> waste dump
+
+Linked processes: dispatcher (truck allocation, ore routing, grade blending,
+fuel rationing), condition-based maintenance (wear, hazard, failures,
+planned maintenance), diesel supply at the fuel bay, electrical demand and
+the grid cap.
 """
 
 import math
@@ -63,8 +68,6 @@ class Pile:
     def take(self, t):
         t = min(t, self.t)
         self.t -= t
-        if self.t < 1e-9:
-            self.t = 0.0
         return t, self.grade, self.bwi
 
     @property
@@ -72,17 +75,86 @@ class Pile:
         return max(0.0, self.capacity - self.t)
 
 
+class Health:
+    """Condition of one machine: wear, failure hazard, breakdowns and planned maintenance.
+
+    A failure happens when the cumulative hazard reaches an Exp(1) budget drawn
+    from the machine's own random stream (so identical use gives identical
+    failures in the live and baseline copies).
+    """
+
+    def __init__(self, kind, key, seed):
+        self.kind = kind
+        self.p = P.MAINT[kind]
+        self.rng = random.Random(f"{seed}:health:{key}")
+        self.h = self.rng.uniform(45.0, 95.0)
+        self.cum = 0.0
+        self.budget = self.rng.expovariate(1.0)
+        self.broken_until = -1.0
+        self.pm_until = -1.0
+        self.pm_pending = False
+        self.failures = 0
+        self.pms = 0
+
+    def hazard(self):
+        return self.p["lambda0_ph"] * math.exp(self.p["k"] * (1.0 - self.h / 100.0))
+
+    def p_fail(self, hours):
+        return 1.0 - math.exp(-self.hazard() * hours)
+
+    def broken(self, t):
+        return t < self.broken_until
+
+    def in_pm(self, t):
+        return t < self.pm_until
+
+    def use(self, dt, intensity):
+        """Wear and hazard for dt seconds of work. True if the machine fails now."""
+        if intensity <= 0:
+            return False
+        self.h = max(0.0, self.h - self.p["wear_ph"] * intensity * dt / 3600.0)
+        self.cum += self.hazard() * intensity * dt / 3600.0
+        if self.cum >= self.budget:
+            self.cum = 0.0
+            self.budget = self.rng.expovariate(1.0)
+            return True
+        return False
+
+    def fail(self, t):
+        self.failures += 1
+        self.pm_pending = False
+        self.broken_until = t + self.p["mttr_h"] * 3600.0 * self.rng.lognormvariate(0.0, 0.3)
+
+    def start_pm(self, t):
+        self.pm_pending = False
+        self.pms += 1
+        self.pm_until = t + self.p["pm_h"] * 3600.0
+
+    def update(self, t):
+        """Finish repairs and maintenance. Returns 'repaired', 'pm_done' or None."""
+        if self.broken_until > 0 and t >= self.broken_until:
+            self.broken_until = -1.0
+            self.h = max(self.h, 70.0)        # the failed component is replaced
+            return "repaired"
+        if self.pm_until > 0 and t >= self.pm_until:
+            self.pm_until = -1.0
+            self.h = 98.0
+            return "pm_done"
+        return None
+
+
 class Truck:
     def __init__(self, idx, seed):
         self.id = f"truck-{idx:02d}"
         self.rng = random.Random(f"{seed}:truck:{self.id}")
-        self.state = "parked"            # parked travel queued loading tipping refueling waiting
+        self.health = Health("truck", self.id, seed)
+        self.state = "parked"   # parked travel queued loading tipping refueling waiting broken maintenance
         self.node = "WS"
         self.seg = None
         self.fwd = True
         self.pos = 0.0
         self.route = []
-        self.dest = None                 # (kind, id): excavator/crusher/rom/dump/fuel
+        self.dest = None        # (kind, node/id): excavator crusher rom dump fuel workshop park
         self.eta = 0.0
         self.payload = 0.0
         self.grade = 0.0
@@ -94,14 +166,14 @@ class Truck:
         self.release_at = 30.0 + 45.0 * (idx - 1)    # staggered shift start
         self.speed = 0.0
         self.x, self.y = 0.0, 0.0
-        self.timer = 0.0
         self.wait_cycle = 0.0
         self.last_wait = 0.0
         self.trips = 0
         self.tonnes = 0.0
         self.fuel_burned = 0.0
         self.retry_at = 0.0
-        self.why = ""                     # reason for waiting/parking
+        self.why = ""            # reason for waiting/parking
+        self.resume = None       # state to return to after a breakdown
 
     @property
     def mass(self):
@@ -110,8 +182,32 @@ class Truck:
     def from_node(self):
         return self.seg.end(self.fwd) if self.seg is not None else self.node
 
+    @property
+    def available(self):
+        return self.state not in ("broken", "maintenance")
 
-class Excavator:
+
+class Machine:
+    """Common down-state logic of excavators and the crusher."""
+
+    forced = False           # what-if scenario
+    health = None
+    why_down = ""
+
+    def is_down(self, t):
+        return self.forced or self.health.broken(t) or self.health.in_pm(t)
+
+    def why(self, t):
+        if self.forced:
+            return "failed"
+        if self.health.broken(t):
+            return "breakdown"
+        if self.health.in_pm(t):
+            return "maintenance"
+        return ""
+
+
+class Excavator(Machine):
     def __init__(self, spec, cluster, seed):
         self.spec = spec
         self.id = spec["id"]
@@ -119,15 +215,21 @@ class Excavator:
         self.role = spec["role"]
         self.cluster = cluster
         self.rng = random.Random(f"{seed}:excavator:{self.id}")
+        self.health = Health("excavator", self.id, seed)
         self.queue = deque()
         self.current = None
         self.timer = 0.0
         self.down = False
-        self.why_down = ""
         self.tonnes = 0.0
         self.passes = 0
         self.rate = Ema(P.KPI_TAU_S)
         self.util = Level(P.KPI_TAU_S)
+
+    @property
+    def state(self):
+        if self.down:
+            return self.why_down or "failed"
+        return "loading" if self.current else "waiting_for_truck"
 
     def pass_time(self):
         return self.spec["pass_s"] * (1 + 0.03 * (self.cluster.face_bwi - P.REF_BWI))
@@ -139,22 +241,18 @@ class Excavator:
         passes = max(1, round(P.TRUCK["payload_t"] / self.bucket_t()))
         return self.spec["spot_s"] + passes * self.pass_time()
 
-    @property
-    def state(self):
-        if self.down:
-            return self.why_down or "down"
-        return "loading" if self.current else "waiting_for_truck"
 
+class Crusher(Machine):
+    id = "crusher-01"
 
-class Crusher:
-    def __init__(self):
+    def __init__(self, seed):
+        self.health = Health("crusher", self.id, seed)
         self.pocket = Pile(capacity=P.CRUSHER["pocket_t"])
         self.queue = deque()
         self.tipping = None
         self.timer = 0.0
         self.down = False
-        self.why_down = ""
-        self.state = "idle"
+        self.state = "starved"
         self.power_kw = 0.0
         self.rate_tph = 0.0
         self.cap_tph = 0.0
@@ -169,11 +267,11 @@ class Crusher:
 
 
 class TipPoint:
-    """ROM pad, waste dump or fuel bay: several spots, FIFO queue."""
+    """ROM pad, waste dump, fuel bay or workshop: several spots, FIFO queue."""
 
     def __init__(self, spots):
         self.spots = spots
-        self.active = []                 # [truck, remaining_s]
+        self.active = []          # [truck, remaining_s]
         self.queue = deque()
 
 
@@ -187,36 +285,52 @@ class MineSim:
         self.excavators = [Excavator(e, self.clusters[e["cluster"]], seed) for e in P.EXCAVATORS]
         self.ex_by_id = {e.id: e for e in self.excavators}
         self.trucks = [Truck(i + 1, seed) for i in range(P.TRUCK_COUNT)]
-        self.crusher = Crusher()
+        self.truck_by_id = {t.id: t for t in self.trucks}
+        self.crusher = Crusher(seed)
         self.rom = Pile(P.ROM["initial_t"], P.ROM["initial_grade"], P.ROM["initial_bwi"], P.ROM["capacity_t"])
         self.rom_pad = TipPoint(P.ROM["tip_spots"])
         self.cos = Pile(P.COS["initial_t"], P.COS["initial_grade"], P.COS["initial_bwi"], P.COS["capacity_t"])
         self.dump = TipPoint(P.WASTE_DUMP["tip_spots"])
         self.fuel_bay = TipPoint(P.FUEL_BAY["spots"])
+        self.workshop = TipPoint(P.WORKSHOP["bays"])
+        # process state
         self.loader_tph = 0.0
-        self.loader_fuel = 0.0
         self.plant_tph = 0.0
         self.plant_grade = 0.0
         self.plant_kw = 0.0
+        self.plant_cap_tph = P.PLANT["target_tph"]
         self.plant_t = 0.0
         self.plant_cu_t = 0.0
-        self.plant_kwh = 0.0
+        self.copper_t = 0.0
         self.waste_t = 0.0
         self.rom_in_t = 0.0
         self.rom_out_t = 0.0
+        # diesel
+        self.bay_l = P.FUEL_BAY["initial_l"]
         self.fuel_dispensed = 0.0
-        self.fuel_initial = sum(t.fuel for t in self.trucks)
+        self.fuel_resupplied = 0.0
+        self.fuel_written_off = 0.0
+        self.loader_fuel = 0.0
+        self.fuel_initial = sum(t.fuel for t in self.trucks) + self.bay_l
+        # electricity
+        self.site_kw = 0.0
+        self.site_kwh = 0.0
+        self.win_kwh = 0.0
+        self.win_s = 0.0
+        self.demand_kw = 0.0
+        self.peak_kw = 0.0
+        # audit
         self.inventory0 = self.rom.t + self.cos.t
         self.dispatcher = Dispatcher(self)
+        self.maintenance = MaintenancePlanner(self)
         self.scenarios = {}
-        self.events = deque(maxlen=50)
+        self.events = deque(maxlen=40)
         self._topo = None
         tau = P.KPI_TAU_S
         self.k = {name: Ema(tau) for name in (
-            "dug", "dug_ore", "dug_waste", "to_crusher", "crushed", "plant", "plant_cu", "hauled",
-            "fuel", "crusher_kwh", "queue_s", "cycles", "rom_in", "rom_out", "waste")}
+            "dug", "dug_ore", "dug_waste", "to_crusher", "crushed", "plant", "plant_cu", "copper", "hauled",
+            "fuel", "crusher_kwh", "site_kwh", "queue_s", "cycles", "rom_in", "rom_out", "waste")}
         self.avail = Level(tau, 1.0)
-        self.queue_now = 0
         for tr in self.trucks:
             tr.x, tr.y = self.net.nodes["WS"][:2]
 
@@ -225,8 +339,7 @@ class MineSim:
         self.events.append((round(self.t), text))
 
     def burn(self, tr, kw, dt):
-        litres = kw * dt / 3600.0 * P.TRUCK["bsfc_l_per_kwh"]
-        litres = min(litres, tr.fuel)
+        litres = min(kw * dt / 3600.0 * P.TRUCK["bsfc_l_per_kwh"], tr.fuel)
         tr.fuel -= litres
         tr.fuel_burned += litres
         self.k["fuel"].add(litres)
@@ -235,10 +348,19 @@ class MineSim:
         tr.dest = dest
         tr.route = route
         tr.eta = self.t + eta_s
-        tr.state = "travel" if route else tr.state
         tr.why = ""
-        if not route:
+        if route:
+            tr.state = "travel"
+        else:
             self.arrive(tr)
+
+    def resupply_lph(self):
+        fs = self.scenarios.get("fuel_shortage")
+        return fs["resupply_lph"] if fs else P.FUEL_BAY["resupply_lph"]
+
+    def energy_cap_kw(self):
+        ec = self.scenarios.get("energy_cap")
+        return ec["cap_kw"] if ec else math.inf
 
     def topo_key(self):
         return (self.net.version, self.crusher.down, tuple(e.down for e in self.excavators))
@@ -246,12 +368,12 @@ class MineSim:
     # ------------------------------------------------------------------ scenarios
     def set_scenarios(self, sc):
         """Apply a normalised scenario dict (see twinvision/sim/scenarios.py)."""
+        old = self.scenarios
         self.scenarios = sc
-        crusher_down = bool(sc.get("crusher_failure"))
-        if crusher_down != (self.crusher.down and self.crusher.why_down == "failed"):
-            self.crusher.down = crusher_down
-            self.crusher.why_down = "failed" if crusher_down else ""
-            self.log("Crusher CR-01 failed" if crusher_down else "Crusher CR-01 repaired")
+        forced = bool(sc.get("crusher_failure"))
+        if forced != self.crusher.forced:
+            self.crusher.forced = forced
+            self.log("Crusher CR-01 failed (what-if)" if forced else "Crusher CR-01 repaired (what-if undone)")
         closed = set(sc.get("road_closure", []))
         for sid, seg in self.net.segments.items():
             if seg.closed != (sid in closed):
@@ -259,42 +381,73 @@ class MineSim:
                 self.log(f"Road {sid} ({seg.name}) {'closed' if sid in closed else 'reopened'}")
         broken = set(sc.get("excavator_breakdown", []))
         for ex in self.excavators:
-            down = ex.id in broken
-            if down != (ex.down and ex.why_down == "failed"):
-                ex.down = down
-                ex.why_down = "failed" if down else ""
-                self.log(f"Excavator {ex.id.upper()} {'broke down' if down else 'back in service'}")
-                if down and ex.current is not None:
-                    tr, ex.current = ex.current, None
-                    self.finish_loading(ex, tr, partial=True)
+            if (ex.id in broken) != ex.forced:
+                ex.forced = ex.id in broken
+                self.log(f"Excavator {ex.id.upper()} {'broke down (what-if)' if ex.forced else 'back in service'}")
+        hs = sc.get("hardness_spike") or {}
+        lg = sc.get("low_grade_zone") or {}
         for cid, cl in self.clusters.items():
-            hs = sc.get("hardness_spike") or {}
-            lg = sc.get("low_grade_zone") or {}
             cl.bwi_mult = hs.get("factor", 1.0) if cid in hs.get("clusters", []) else 1.0
             cl.grade_mult = lg.get("factor", 1.0) if cid in lg.get("clusters", []) else 1.0
+        if bool(hs) != bool(old.get("hardness_spike")) or hs != old.get("hardness_spike", {}):
+            self.log(f"Ore hardness x{hs['factor']:.2f} in {', '.join(hs['clusters'])}" if hs else "Ore hardness back to normal")
+        if lg != old.get("low_grade_zone", {}):
+            self.log(f"Low-grade zone x{lg['factor']:.2f} in {', '.join(lg['clusters'])}" if lg else "Low-grade zone passed")
+        fs, ofs = sc.get("fuel_shortage"), old.get("fuel_shortage")
+        if fs and not ofs:
+            lost = max(0.0, self.bay_l - fs["bay_stock_l"])
+            self.bay_l -= lost
+            self.fuel_written_off += lost
+            self.log(f"Diesel supply cut to {fs['resupply_lph']:.0f} L/h, fuel bay stock {self.bay_l:,.0f} L")
+        elif ofs and not fs:
+            self.log("Diesel supply restored")
+        ec, oec = sc.get("energy_cap"), old.get("energy_cap")
+        if ec != oec:
+            self.log(f"Grid cap {ec['cap_kw']:,.0f} kW (peak tariff window)" if ec else "Grid cap lifted")
 
     # ------------------------------------------------------------------ step
     def step(self, dt):
         self.t += dt
+        self.update_machines()
         key = self.topo_key()
         if key != self._topo:
             if self._topo is not None:
                 self.dispatcher.replan()
             self._topo = key
+        self.maintenance.step()
+        self.dispatcher.step()
         for ex in self.excavators:
             self.step_excavator(ex, dt)
-        self.queue_now = 0
         for tr in self.trucks:
             self.step_truck(tr, dt)
         self.step_crusher(dt)
         self.step_tip_points(dt)
         self.step_rom_reclaim(dt)
         self.step_plant(dt)
+        self.step_fuel_bay(dt)
+        self.step_energy(dt)
         self.step_kpis(dt)
+
+    def update_machines(self):
+        t = self.t
+        for m in [*self.excavators, self.crusher]:
+            ev = m.health.update(t)
+            if ev:
+                self.log(f"{m.id.upper()} {'repaired' if ev == 'repaired' else 'maintenance done'}")
+            m.down = m.is_down(t)
+            m.why_down = m.why(t)
 
     def step_excavator(self, ex, dt):
         ex.util.update(1.0 if ex.current else 0.0, dt)
         if ex.down:
+            if ex.current is not None:
+                tr, ex.current = ex.current, None
+                self.finish_loading(ex, tr, partial=True)
+            return
+        if ex.health.pm_pending and ex.current is None:
+            ex.health.start_pm(self.t)
+            ex.down = True
+            self.log(f"{ex.id.upper()} planned maintenance started ({ex.health.p['pm_h']:.0f} h)")
             return
         if ex.current is None and ex.queue:
             tr = ex.queue.popleft()
@@ -305,6 +458,11 @@ class MineSim:
         if tr is None:
             return
         ex.timer += dt
+        if ex.health.use(dt, ex.cluster.face_bwi / P.REF_BWI):
+            ex.health.fail(self.t)
+            ex.down = True
+            self.log(f"{ex.id.upper()} breakdown (health {ex.health.h:.0f}%)")
+            return
         cap = P.TRUCK["payload_t"]
         while ex.timer >= 0:
             pt = ex.pass_time() * ex.rng.uniform(0.92, 1.10)
@@ -329,20 +487,32 @@ class MineSim:
     def finish_loading(self, ex, tr, partial=False):
         tr.material = "ore" if tr.grade >= P.CUTOFF_GRADE else "waste"
         tr.source = ex.id
-        self.k["dug_ore" if tr.material == "ore" else "dug_waste"].add(tr.payload)
         if tr.payload <= 0:
             tr.state = "waiting"
             self.dispatcher.assign_empty(tr)
             return
+        self.k["dug_ore" if tr.material == "ore" else "dug_waste"].add(tr.payload)
         if partial:
             self.log(f"{tr.id} leaves {ex.id.upper()} part-loaded ({tr.payload:.0f} t)")
         self.dispatcher.route_loaded(tr)
 
     def step_truck(self, tr, dt):
         st = tr.state
+        if st == "broken":
+            tr.speed = 0.0
+            if tr.health.update(self.t) == "repaired":
+                self.log(f"{tr.id} repaired")
+                tr.state = tr.resume or "travel"
+                tr.resume = None
+            return
         if st == "parked":
             tr.speed = 0.0
             if self.t >= tr.release_at and self.t >= tr.retry_at:
+                tr.retry_at = self.t + 300.0
+                d = self.dispatcher
+                if tr.why == "fuel rationing" and d.rationed() <= d.ration:
+                    return
+                tr.why = ""
                 self.dispatcher.assign_empty(tr)
             return
         if st == "travel":
@@ -354,7 +524,6 @@ class MineSim:
         if st in ("queued", "waiting"):
             tr.wait_cycle += dt
             self.k["queue_s"].add(dt)
-            self.queue_now += 1
         if st == "waiting" and self.t >= tr.retry_at:
             tr.retry_at = self.t + 60.0
             if tr.payload > 0:
@@ -373,7 +542,6 @@ class MineSim:
                     tr.why = "road closed" if seg.closed else f"road {seg.id} full"
                     tr.wait_cycle += remaining
                     self.k["queue_s"].add(remaining)
-                    self.queue_now += 1
                     self.burn(tr, T["idle_kw"], remaining)
                     if seg.closed and self.t >= tr.retry_at:
                         tr.retry_at = self.t + 60.0
@@ -382,15 +550,25 @@ class MineSim:
                 tr.why = ""
                 seg.occupants.add(tr.id)
                 tr.seg, tr.fwd, tr.pos = seg, fwd, 0.0
+            if tr.fuel <= 0:
+                tr.speed = 0.0
+                tr.why = "out of fuel"
+                return
             grade = seg.grade if fwd else -seg.grade
-            loaded = tr.payload > 0
-            v = truck_speed_ms(tr.mass, grade, seg.limit_kmh, loaded) * tr.driver
-            left = seg.length - tr.pos
-            used = min(remaining, left / v)
+            v = truck_speed_ms(tr.mass, grade, seg.limit_kmh, tr.payload > 0) * tr.driver
+            used = min(remaining, (seg.length - tr.pos) / v)
             tr.pos += v * used
             remaining -= used
             tr.speed = v * 3.6
             self.burn(tr, truck_power_kw(tr.mass, grade, v), used)
+            if tr.health.use(used, 1.0 + 0.5 * tr.payload / T["payload_t"]):
+                tr.health.fail(self.t)
+                tr.resume = "travel"
+                tr.state = "broken"
+                tr.speed = 0.0
+                tr.x, tr.y = seg.point(tr.pos, fwd)
+                self.log(f"{tr.id} breakdown on road {seg.id} (health {tr.health.h:.0f}%)")
+                return
             if tr.pos >= seg.length - 1e-6:
                 seg.occupants.discard(tr.id)
                 seg.passes += 1
@@ -409,6 +587,7 @@ class MineSim:
         kind = tr.dest[0] if tr.dest else None
         tr.speed = 0.0
         tr.x, tr.y = self.net.nodes[tr.node][:2]
+        tr.state = "queued"
         if kind == "excavator":
             ex = self.ex_by_id[tr.dest[1]]
             if ex.down:
@@ -416,27 +595,25 @@ class MineSim:
                 self.dispatcher.assign_empty(tr)
                 return
             ex.queue.append(tr)
-            tr.state = "queued"
         elif kind == "crusher":
             if self.crusher.down:
                 tr.state = "waiting"
                 self.dispatcher.route_loaded(tr)
                 return
             self.crusher.queue.append(tr)
-            tr.state = "queued"
         elif kind == "rom":
             self.rom_pad.queue.append(tr)
-            tr.state = "queued"
         elif kind == "dump":
             self.dump.queue.append(tr)
-            tr.state = "queued"
         elif kind == "fuel":
             self.fuel_bay.queue.append(tr)
-            tr.state = "queued"
+        elif kind == "workshop":
+            self.workshop.queue.append(tr)
         else:
             tr.state = "parked"
+            tr.retry_at = self.t + 300.0
 
-    def after_dump(self, tr, where):
+    def after_dump(self, tr):
         t = tr.payload
         tr.trips += 1
         tr.tonnes += t
@@ -446,8 +623,17 @@ class MineSim:
         tr.wait_cycle = 0.0
         tr.payload, tr.grade, tr.bwi, tr.material = 0.0, 0.0, 0.0, ""
         tr.state = "waiting"
+        self.next_job(tr)
+
+    def next_job(self, tr):
+        """Empty truck: maintenance, then fuel, then the dispatcher."""
+        if tr.health.pm_pending:
+            route, eta = self.net.route(tr.from_node(), "WS", False)
+            if route is not None:
+                self.send(tr, ("workshop", "WS"), route, eta)
+                return
         if tr.fuel < P.TRUCK["tank_l"] * P.TRUCK["refuel_below_frac"]:
-            route, eta = self.net.route(tr.node, "WS", False)
+            route, eta = self.net.route(tr.from_node(), "WS", False)
             if route is not None:
                 self.send(tr, ("fuel", "WS"), route, eta)
                 return
@@ -471,10 +657,14 @@ class MineSim:
                 c.pocket.add(tr.payload, tr.grade, tr.bwi)
                 c.received += tr.payload
                 self.k["to_crusher"].add(tr.payload)
-                self.after_dump(tr, "crusher")
+                self.after_dump(tr)
+        if c.health.pm_pending and not c.down and c.tipping is None:
+            c.health.start_pm(self.t)
+            c.down = True
+            self.log(f"CRUSHER-01 planned maintenance started ({c.health.p['pm_h']:.0f} h, COS "
+                     f"{self.cos.t / P.PLANT['target_tph']:.1f} h of feed)")
         if c.down:
-            c.state, c.power_kw, c.rate_tph = c.why_down or "down", 0.0, 0.0
-            c.cap_tph = 0.0
+            c.state, c.power_kw, c.rate_tph, c.cap_tph = c.why(self.t) or "down", 0.0, 0.0, 0.0
             return
         bwi = c.pocket.bwi if c.pocket.t > 0 else P.REF_BWI
         c.cap_tph = c.capacity_tph(bwi)
@@ -487,6 +677,10 @@ class MineSim:
             c.power_kw = C["idle_kw"] + C["kwh_per_t_per_bwi"] * h * c.rate_tph
             c.state = "crushing"
             self.k["crushed"].add(t)
+            if c.health.use(dt, (c.rate_tph / P.PLANT["target_tph"]) * (h / P.REF_BWI)):
+                c.health.fail(self.t)
+                c.down = True
+                self.log(f"CRUSHER-01 breakdown (health {c.health.h:.0f}%)")
         else:
             c.rate_tph = 0.0
             c.power_kw = C["idle_kw"]
@@ -496,18 +690,30 @@ class MineSim:
         self.k["crusher_kwh"].add(kwh)
 
     def step_tip_points(self, dt):
-        for tp, tip_s, where in ((self.rom_pad, P.ROM["tip_s"], "rom"),
-                                 (self.dump, P.WASTE_DUMP["tip_s"], "dump"),
-                                 (self.fuel_bay, None, "fuel")):
+        for tp, where in ((self.rom_pad, "rom"), (self.dump, "dump"), (self.fuel_bay, "fuel"),
+                          (self.workshop, "workshop")):
             while tp.queue and len(tp.active) < tp.spots:
-                tr = tp.queue.popleft()
+                tr = tp.queue[0]
                 if where == "fuel":
-                    need = P.TRUCK["tank_l"] - tr.fuel
-                    dur = P.TRUCK["refuel_fixed_s"] + need / P.TRUCK["refuel_lpm"] * 60.0
-                    tr.state = "refueling"
+                    give = min(P.TRUCK["tank_l"] - tr.fuel, self.bay_l)
+                    if give < min(P.FUEL_BAY["min_dispense_l"], P.TRUCK["tank_l"] - tr.fuel):
+                        tr.why = "fuel bay empty"
+                        break
+                    self.bay_l -= give
+                    tr.fuel += give
+                    self.fuel_dispensed += give
+                    dur = P.TRUCK["refuel_fixed_s"] + give / P.TRUCK["refuel_lpm"] * 60.0
+                    tr.state, tr.why = "refueling", ""
+                elif where == "workshop":
+                    tr.health.start_pm(self.t)
+                    dur = tr.health.p["pm_h"] * 3600.0
+                    tr.state = "maintenance"
+                    self.log(f"{tr.id} planned maintenance started")
                 else:
+                    tip_s = P.ROM["tip_s"] if where == "rom" else P.WASTE_DUMP["tip_s"]
                     dur = tip_s * tr.rng.uniform(0.9, 1.15)
                     tr.state = "tipping"
+                tp.queue.popleft()
                 tp.active.append([tr, dur])
             done = []
             for item in tp.active:
@@ -521,26 +727,39 @@ class MineSim:
                     self.rom.add(tr.payload, tr.grade, tr.bwi)
                     self.rom_in_t += tr.payload
                     self.k["rom_in"].add(tr.payload)
-                    self.after_dump(tr, "rom")
+                    self.after_dump(tr)
                 elif where == "dump":
                     self.waste_t += tr.payload
                     self.k["waste"].add(tr.payload)
-                    self.after_dump(tr, "dump")
+                    self.after_dump(tr)
                 else:
-                    litres = P.TRUCK["tank_l"] - tr.fuel
-                    tr.fuel += litres
-                    self.fuel_dispensed += litres
+                    if where == "workshop":
+                        tr.health.pm_until = -1.0
+                        tr.health.h = 98.0
+                        self.log(f"{tr.id} maintenance done")
                     tr.state = "waiting"
-                    self.dispatcher.assign_empty(tr)
+                    self.next_job(tr)
 
     def step_rom_reclaim(self, dt):
+        """Front-end loader feeds the crusher from the ROM pad when it would starve or to blend."""
         c = self.crusher
         D = P.DISPATCH
+        L = P.PLANT
         self.loader_tph = 0.0
-        busy = c.tipping is not None or bool(c.queue)
-        if (c.down or busy or self.rom.t <= 0
-                or c.pocket.t > 0.35 * c.pocket.capacity
-                or self.cos.t > D["cos_reclaim_frac"] * self.cos.capacity):
+        if c.down or self.rom.t <= 0 or c.tipping is not None:
+            return
+        target = (L["grade_min"] + L["grade_max"]) / 2
+        starving = not c.queue and c.pocket.t < 0.35 * c.pocket.capacity and \
+            self.cos.t < D["cos_reclaim_frac"] * self.cos.capacity
+        off = self.cos.grade - target
+        building = self.maintenance.crusher_prep and c.pocket.t < 0.5 * c.pocket.capacity and \
+            not c.queue and self.cos.free > 0
+        blending = abs(off) > 0.08 and (self.rom.grade - target) * off < 0 and \
+            c.pocket.t < 0.5 * c.pocket.capacity and self.cos.t < D["cos_high_frac"] * self.cos.capacity
+        if not (starving or blending or building):
+            return
+        litres = P.ROM["loader_l_per_h"] * dt / 3600.0
+        if self.bay_l < litres:
             return
         t, g, h = self.rom.take(min(P.ROM["reclaim_tph"] * dt / 3600.0, c.pocket.free))
         if t <= 0:
@@ -549,19 +768,46 @@ class MineSim:
         self.rom_out_t += t
         self.k["rom_out"].add(t)
         self.loader_tph = t * 3600.0 / dt
-        self.loader_fuel += P.ROM["loader_l_per_h"] * dt / 3600.0
+        self.bay_l -= litres
+        self.loader_fuel += litres
+        self.k["fuel"].add(litres)
 
     def step_plant(self, dt):
         L = P.PLANT
-        t, g, h = self.cos.take(L["target_tph"] * dt / 3600.0)
+        kwh_t = L["kwh_per_t_per_bwi"] * max(self.cos.bwi, 1.0)
+        cap = self.energy_cap_kw()
+        self.plant_cap_tph = L["target_tph"]
+        if cap < math.inf:
+            self.plant_cap_tph = max(0.0, min(L["target_tph"], (cap - self.crusher.power_kw - L["base_kw"]) / kwh_t))
+        t, g, h = self.cos.take(self.plant_cap_tph * dt / 3600.0)
         self.plant_tph = t * 3600.0 / dt
         self.plant_grade = g if t > 0 else 0.0
         self.plant_t += t
         self.plant_cu_t += t * g / 100.0
-        self.plant_kw = L["base_kw"] + L["kwh_per_t_per_bwi"] * h * self.plant_tph
-        self.plant_kwh += self.plant_kw * dt / 3600.0
+        cu = t * g / 100.0 * P.CU_RECOVERY
+        self.copper_t += cu
+        self.plant_kw = L["base_kw"] + kwh_t * self.plant_tph
         self.k["plant"].add(t)
         self.k["plant_cu"].add(t * g)
+        self.k["copper"].add(cu)
+
+    def step_fuel_bay(self, dt):
+        add = min(self.resupply_lph() * dt / 3600.0, P.FUEL_BAY["capacity_l"] - self.bay_l)
+        if add > 0:
+            self.bay_l += add
+            self.fuel_resupplied += add
+
+    def step_energy(self, dt):
+        self.site_kw = self.crusher.power_kw + self.plant_kw
+        kwh = self.site_kw * dt / 3600.0
+        self.site_kwh += kwh
+        self.k["site_kwh"].add(kwh)
+        self.win_kwh += kwh
+        self.win_s += dt
+        if self.win_s >= P.GRID["demand_window_s"] - 1e-9:
+            self.demand_kw = self.win_kwh * 3600.0 / self.win_s
+            self.peak_kw = max(self.peak_kw, self.demand_kw)
+            self.win_kwh = self.win_s = 0.0
 
     def step_kpis(self, dt):
         f = math.exp(-dt / P.KPI_TAU_S)
@@ -572,7 +818,8 @@ class MineSim:
         for e in self.dispatcher.assigned.values():
             e.decay(f)
         units = len(self.excavators) + len(self.trucks) + 1
-        up = sum(not e.down for e in self.excavators) + len(self.trucks) + (not self.crusher.down)
+        up = sum(not e.down for e in self.excavators) + sum(t.available for t in self.trucks) + \
+            (not self.crusher.down)
         self.avail.update(up / units, dt)
 
     # ------------------------------------------------------------------ audits
@@ -584,9 +831,10 @@ class MineSim:
         return dug + self.inventory0 - (in_trucks + stocks + self.waste_t + self.plant_t)
 
     def fuel_balance(self):
+        """Opening diesel + deliveries - (burned + written off + in tanks + in the bay)."""
         tanks = sum(tr.fuel for tr in self.trucks)
-        burned = sum(tr.fuel_burned for tr in self.trucks)
-        return self.fuel_initial + self.fuel_dispensed - burned - tanks
+        burned = sum(tr.fuel_burned for tr in self.trucks) + self.loader_fuel
+        return self.fuel_initial + self.fuel_resupplied - (burned + self.fuel_written_off + tanks + self.bay_l)
 
     def kpis(self):
         k = self.k
@@ -597,23 +845,31 @@ class MineSim:
             "tph_crushed": k["crushed"].v,
             "plant_feed_tph": k["plant"].v,
             "plant_feed_grade": k["plant_cu"].v / k["plant"].v if k["plant"].v > 1e-6 else 0.0,
+            "copper_tph": k["copper"].v,
             "mean_queue_min": k["queue_s"].v / k["cycles"].v / 60.0 if k["cycles"].v > 1e-6 else 0.0,
             "availability_pct": 100.0 * self.avail.v,
             "crusher_kwh_t": k["crusher_kwh"].v / k["crushed"].v if k["crushed"].v > 1e-6 else 0.0,
+            "site_kwh_t": k["site_kwh"].v / k["plant"].v if k["plant"].v > 100 else 0.0,
             "diesel_l_t": k["fuel"].v / k["hauled"].v if k["hauled"].v > 1e-6 else 0.0,
             "diesel_lph": k["fuel"].v,
         }
 
 
 class Dispatcher:
-    """Assigns empty trucks to excavators and loaded trucks to destinations.
+    """Truck dispatching and ore routing.
 
     Empty truck: pick the excavator with the lowest score
-        expected loading start time - deficit_weight x (target - actual rate) / target
-    where the expected start accounts for travel time and for the trucks
-    already queued at or driving to that excavator. Loaded truck: waste goes to
-    the dump; ore goes to the crusher unless it is down, its expected wait is
-    too long, or the coarse ore stockpile is near full; then to the ROM pad.
+        expected loading start - deficit_weight x (target - actual rate) / target
+                               - grade_weight x (blend benefit of its face grade)
+    where the expected start accounts for travel and for the trucks already
+    queued at or driving to that excavator, and the blend benefit is positive
+    when the face grade pulls the coarse-ore (plant feed) grade toward the
+    middle of the band. Loaded truck: waste to the dump; ore to the crusher
+    unless the crusher is down, its expected wait is too long, the coarse ore
+    stockpile is near full, or the load would push the feed grade further out
+    of band; then to the ROM pad (blend stock). Under a diesel shortage the
+    dispatcher parks trucks so that fuel lasts, suspending waste stripping
+    first to protect ore production.
     """
 
     def __init__(self, sim):
@@ -622,12 +878,52 @@ class Dispatcher:
         self.decisions = 0
         self.reroutes = 0
         self.to_rom = 0
+        self.blend_diverts = 0
         self.last = ""
+        self.ration = 0
+        self.next_fuel_review = 0.0
+        self.fuel_note = ""
 
     def note(self, text):
         self.decisions += 1
         self.last = text
 
+    @staticmethod
+    def target_grade():
+        return (P.PLANT["grade_min"] + P.PLANT["grade_max"]) / 2
+
+    # ---------------------------------------------------------- fuel rationing
+    def step(self):
+        sim = self.sim
+        if sim.t < self.next_fuel_review:
+            return
+        self.next_fuel_review = sim.t + 600.0
+        active = [t for t in sim.trucks if t.state not in ("parked", "broken", "maintenance")]
+        per_truck = sim.k["fuel"].v / max(1, len(active)) if sim.k["fuel"].v > 1 else 190.0
+        horizon_h = 12.0
+        need = per_truck * len(sim.trucks) - sim.resupply_lph() - sim.bay_l / horizon_h
+        n = 0 if need <= 0 else min(len(sim.trucks) - 3, math.ceil(need / max(per_truck, 1.0)))
+        if n != self.ration:
+            cover = sim.bay_l / max(1.0, per_truck * (len(sim.trucks) - n) - sim.resupply_lph()) \
+                if per_truck * (len(sim.trucks) - n) > sim.resupply_lph() else math.inf
+            if n > 0:
+                self.fuel_note = (f"Fuel rationing: park {n} trucks, waste stripping suspended "
+                                  f"(bay {sim.bay_l:,.0f} L, supply {sim.resupply_lph():,.0f} L/h, "
+                                  f"cover {'%.1f h' % cover if cover < 1e6 else 'ok'})")
+            else:
+                self.fuel_note = "Fuel rationing lifted"
+            sim.log(self.fuel_note)
+            self.note(self.fuel_note)
+            self.ration = n
+
+    def cos_high_limit(self):
+        return 0.98 if self.sim.maintenance.crusher_prep else P.DISPATCH["cos_high_frac"]
+
+    def rationed(self):
+        return sum(1 for t in self.sim.trucks if t.dest == ("park", "WS") and t.why == "fuel rationing"
+                   and t.state in ("parked", "travel"))
+
+    # ---------------------------------------------------------- empty trucks
     def ex_free_at(self, ex, before, exclude):
         sim = self.sim
         free = sim.t
@@ -642,12 +938,29 @@ class Dispatcher:
             free = max(free, eta) + ex.load_time_est()
         return free
 
+    def blend_benefit(self, ex):
+        """+1 when this face pulls the feed grade toward target as much as possible, -1 the opposite."""
+        if ex.role != "ore":
+            return 0.0
+        half = (P.PLANT["grade_max"] - P.PLANT["grade_min"]) / 2
+        target = self.target_grade()
+        need = max(-1.0, min(1.0, (target - self.sim.cos.grade) / half))
+        pull = max(-1.0, min(1.0, (ex.cluster.face_grade - target) / half))
+        return need * pull
+
     def assign_empty(self, tr):
         sim = self.sim
         src = tr.from_node()
+        if self.ration > self.rationed() and tr.payload <= 0:
+            route, t = sim.net.route(src, "WS", False)
+            if route is not None:
+                self.note(f"{tr.id} parked (fuel rationing)")
+                self._go(tr, ("park", "WS"), route, t)
+                tr.why = "fuel rationing"
+                return
         best = None
         for ex in sim.excavators:
-            if ex.down:
+            if ex.down or (self.ration > 0 and ex.role == "waste"):
                 continue
             route, t_travel = sim.net.route(src, ex.node, False)
             if route is None:
@@ -656,11 +969,12 @@ class Dispatcher:
             start = max(arrival, self.ex_free_at(ex, arrival, tr))
             target = P.DISPATCH["target_tph"][ex.id]
             deficit = (target - self.assigned[ex.id].v) / target
-            score = start - sim.t - P.DISPATCH["deficit_weight_s"] * deficit
+            score = (start - sim.t - P.DISPATCH["deficit_weight_s"] * deficit
+                     - P.DISPATCH["grade_weight_s"] * self.blend_benefit(ex))
             if best is None or score < best[0] - 1e-9:
                 best = (score, ex, route, t_travel)
         if best is None:
-            tr.state = "waiting" if tr.state != "parked" else "parked"
+            tr.state = "parked" if tr.state == "parked" else "waiting"
             tr.why = "no reachable excavator"
             tr.retry_at = sim.t + 60.0
             return
@@ -669,6 +983,7 @@ class Dispatcher:
         self.note(f"{tr.id} -> {ex.id}")
         self._go(tr, ("excavator", ex.id), route, t_travel)
 
+    # ---------------------------------------------------------- loaded trucks
     def crusher_wait_est(self, arrival):
         sim = self.sim
         c = sim.crusher
@@ -683,19 +998,31 @@ class Dispatcher:
         sim = self.sim
         src = tr.from_node()
         D = P.DISPATCH
+        L = P.PLANT
         if tr.material == "waste":
-            options = [("dump", "DUMP")]
-            reason = "waste"
+            options, reason = [("dump", "DUMP")], "waste"
         else:
             r_cr, t_cr = sim.net.route(src, "CR", True)
             crusher_ok = not sim.crusher.down and r_cr is not None
-            cos_high = sim.cos.t > D["cos_high_frac"] * sim.cos.capacity
+            cos_high = sim.cos.t > self.cos_high_limit() * sim.cos.capacity
             wait = self.crusher_wait_est(sim.t + t_cr) if crusher_ok else math.inf
-            if crusher_ok and not cos_high and wait <= D["crusher_wait_max_s"]:
-                options, reason = [("crusher", "CR"), ("rom", "ROM")], "ore to crusher"
+            target = self.target_grade()
+            off_band = (tr.grade < L["grade_min"] and sim.cos.grade < target) or \
+                       (tr.grade > L["grade_max"] and sim.cos.grade > target)
+            if crusher_ok and not cos_high and wait <= D["crusher_wait_max_s"] and not off_band:
+                options, reason = [("crusher", "CR"), ("rom", "ROM")], f"ore {tr.grade:.2f}% to crusher"
             else:
-                why = "crusher down" if sim.crusher.down else ("COS high" if cos_high else
-                      ("crusher cut off" if r_cr is None else f"crusher wait {wait / 60:.0f} min"))
+                if sim.crusher.down:
+                    why = f"crusher {sim.crusher.why(sim.t)}"
+                elif r_cr is None:
+                    why = "crusher cut off"
+                elif cos_high:
+                    why = "COS high"
+                elif off_band:
+                    why = f"blend: {tr.grade:.2f}% would push feed {sim.cos.grade:.2f}% out of band"
+                    self.blend_diverts += 1
+                else:
+                    why = f"crusher wait {wait / 60:.0f} min"
                 options, reason = [("rom", "ROM"), ("crusher", "CR")], f"ore to ROM ({why})"
         for kind, node in options:
             route, t = sim.net.route(src, node, True)
@@ -710,18 +1037,17 @@ class Dispatcher:
         tr.retry_at = sim.t + 60.0
 
     def _go(self, tr, dest, route, t):
-        sim = self.sim
         # Keep the segment the truck is driving on; the new route starts at its end.
         if tr.seg is not None and tr.route and tr.route[0][0] is tr.seg:
             route = [tr.route[0]] + route
-        sim.send(tr, dest, route, t)
+        self.sim.send(tr, dest, route, t)
 
     def reroute(self, tr):
-        """Re-plan one travelling truck after a road closure or equipment change."""
+        """Re-plan one truck after a road closure or an equipment change."""
         if tr.payload > 0:
             self.route_loaded(tr)
         else:
-            self.assign_empty(tr)
+            self.sim.next_job(tr)
         self.reroutes += 1
 
     def replan(self):
@@ -746,3 +1072,100 @@ class Dispatcher:
                     self.reroute(tr)
             elif tr.state == "waiting":
                 tr.retry_at = sim.t
+            elif tr.state == "broken" and tr.resume == "travel":
+                upcoming = tr.route[1:] if tr.seg is not None else tr.route
+                if any(seg.closed for seg, _ in upcoming) or \
+                        (kind == "excavator" and sim.ex_by_id[tr.dest[1]].down) or \
+                        (kind == "crusher" and sim.crusher.down):
+                    self.reroute(tr)
+                    tr.resume, tr.state = "travel", "broken"
+
+
+class MaintenancePlanner:
+    """Condition-based maintenance: pull a machine for planned maintenance when
+    the expected cost of an unplanned failure within the horizon exceeds the
+    cost of stopping it now. Costs are in tonnes of lost production:
+
+        E[failure] = P(fail within H) x MTTR x loss rate x unplanned factor
+        E[planned] = PM duration x loss rate x opportunity factor
+
+    The crusher's loss rate accounts for the coarse ore stockpile: while the
+    stockpile can feed the plant, a crusher stop costs only re-handling, so
+    the planner prefers to service the crusher when the stockpile is full.
+    """
+
+    def __init__(self, sim):
+        self.sim = sim
+        self.next_review = P.MAINT["review_s"]
+        self.decisions = 0
+        self.last = ""
+        self.avoided_t = 0.0
+        self.crusher_prep = False       # building the COS before a crusher stop
+        self.prep_since = 0.0
+
+    def loss(self, kind, obj, duration_h):
+        sim = self.sim
+        if kind == "truck":
+            return P.MAINT["truck"]["loss_tph"] * duration_h
+        if kind == "excavator":
+            value = 1.5 if obj.role == "ore" else 1.0
+            return P.DISPATCH["target_tph"][obj.id] * value * duration_h
+        cos_h = sim.cos.t / P.PLANT["target_tph"]
+        return P.PLANT["target_tph"] * max(0.0, duration_h - cos_h) + 300.0 * duration_h
+
+    def step(self):
+        sim = self.sim
+        c = sim.crusher
+        if self.crusher_prep:
+            cover_h = sim.cos.t / P.PLANT["target_tph"]
+            if c.down or c.health.pm_pending:
+                self.crusher_prep = False
+            elif cover_h >= c.health.p["pm_h"] * 0.95 or sim.cos.t >= 0.95 * sim.cos.capacity or \
+                    sim.t - self.prep_since > 6 * 3600:
+                self.crusher_prep = False
+                c.health.pm_pending = True
+                self.last = f"CRUSHER-01 PM released: COS {sim.cos.t:,.0f} t = {cover_h:.1f} h of plant feed"
+                sim.log(self.last)
+        if sim.t < self.next_review:
+            return
+        self.next_review = sim.t + P.MAINT["review_s"]
+        M = P.MAINT
+        in_shop = sum(1 for t in sim.trucks if t.health.pm_pending or t.state == "maintenance")
+        machines = [("crusher", sim.crusher)] + [("excavator", e) for e in sim.excavators] + \
+                   [("truck", t) for t in sorted(sim.trucks, key=lambda t: t.health.h)]
+        for kind, m in machines:
+            hl = m.health
+            if hl.pm_pending or hl.broken(sim.t) or hl.in_pm(sim.t) or getattr(m, "forced", False):
+                continue
+            if kind == "crusher" and self.crusher_prep:
+                continue
+            if kind == "truck" and (in_shop >= P.WORKSHOP["bays"] or not m.available):
+                continue
+            if kind == "excavator" and sum(e.down or e.health.pm_pending for e in sim.excavators) >= 1:
+                continue
+            p = hl.p_fail(M["horizon_h"])
+            e_fail = p * self.loss(kind, m, hl.p["mttr_h"]) * M["unplanned_factor"]
+            e_pm = self.loss(kind, m, hl.p["pm_h"])
+            if kind == "crusher" and e_fail <= e_pm:
+                full_h = sim.cos.capacity * 0.95 / P.PLANT["target_tph"]
+                e_pm_full = P.PLANT["target_tph"] * max(0.0, hl.p["pm_h"] - full_h) + 300.0 * hl.p["pm_h"]
+                if e_fail > e_pm_full:
+                    self.crusher_prep = True
+                    self.prep_since = sim.t
+                    self.decisions += 1
+                    self.avoided_t += e_fail - e_pm_full
+                    self.last = (f"CRUSHER-01 PM scheduled: health {hl.h:.0f}%, P(fail in {M['horizon_h']:.0f} h) "
+                                 f"{p:.0%}, expected loss {e_fail:,.0f} t; building COS to cover the "
+                                 f"{hl.p['pm_h']:.0f} h stop (planned cost {e_pm_full:,.0f} t)")
+                    sim.log(self.last)
+                continue
+            if e_fail > e_pm:
+                hl.pm_pending = True
+                if kind == "truck":
+                    in_shop += 1
+                self.decisions += 1
+                self.avoided_t += e_fail - e_pm
+                name = m.id.upper() if kind != "truck" else m.id
+                self.last = (f"PM {name}: health {hl.h:.0f}%, P(fail in {M['horizon_h']:.0f} h) {p:.0%}, "
+                             f"expected loss {e_fail:,.0f} t > planned stop {e_pm:,.0f} t")
+                sim.log(self.last)

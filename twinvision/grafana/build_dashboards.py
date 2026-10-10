@@ -137,10 +137,11 @@ TRUCK_STATES = {
     "queued_at_crusher": "#d62728", "queued_at_rom": "#e377c2", "queued_at_dump": "#c49c94",
     "dumping_crusher": "#8c564b", "dumping_rom": "#bcbd22", "dumping_waste": "#7f7f7f",
     "waiting_road": "#ff0000", "waiting": "#ffbb78", "parked": "#cccccc", "refueling": "#9467bd",
-    "to_fuel_bay": "#c5b0d5", "queued_at_fuel_bay": "#aec7e8",
+    "to_fuel_bay": "#c5b0d5", "queued_at_fuel_bay": "#aec7e8", "breakdown": "#d62728",
+    "to_workshop": "#f7b6d2", "queued_at_workshop": "#f7b6d2", "maintenance": "#e377c2", "to_park": "#dddddd",
 }
 CRUSHER_STATES = {"crushing": "#2ca02c", "starved": "#ffbb78", "blocked_cos_full": "#ff7f0e",
-                  "failed": "#d62728", "idle": "#cccccc"}
+                  "failed": "#d62728", "breakdown": "#a50f15", "maintenance": "#e377c2"}
 
 
 def mappings(colors):
@@ -156,15 +157,21 @@ def overview():
     b.stat_pair("Ore mined, t/h", "mine", "tph_ore", "none", 0)
     b.stat_pair("Plant feed, t/h", "mine", "plant_feed_tph", "none", 0)
     b.stat_pair("Plant feed grade, % Cu", "mine", "plant_feed_grade", "none", 3)
+    b.stat_pair("Copper in concentrate, t/h", "mine", "copper_tph", "none", 2)
+    b.stat_pair("Availability, %", "mine", "availability_pct", "none", 1)
     b.stat_pair("Mean truck queue, min/cycle", "mine", "mean_queue_min", "none", 2)
     b.stat_pair("Diesel, L/t hauled", "mine", "diesel_l_t", "none", 3)
+    b.stat_pair("Site energy, kWh/t feed", "mine", "site_kwh_t", "none", 1)
+    b.stat_pair("Peak 15-min demand, kW", "power-grid", "peak_demand_kw", "none", 0)
 
     b.row("Production and plant feed")
     b.pair("Plant feed (30-min avg), t/h", "mine", "plant_feed_tph", "none", 0)
-    b.pair("Plant feed grade, % Cu (band 0.45-0.65)", "mine", "plant_feed_grade", "none", 3,
+    b.pair("Plant feed grade, % Cu (band 0.55-0.85)", "mine", "plant_feed_grade", "none", 3,
            thresholds=[{"color": "rgba(214,39,40,0.15)", "value": None},
-                       {"color": "rgba(44,160,44,0.10)", "value": 0.45},
-                       {"color": "rgba(214,39,40,0.15)", "value": 0.65}])
+                       {"color": "rgba(44,160,44,0.10)", "value": 0.55},
+                       {"color": "rgba(214,39,40,0.15)", "value": 0.85}])
+    b.pair("Copper in concentrate, t/h", "mine", "copper_tph", "none", 2,
+           description="plant feed x grade x 87.9 % flotation recovery (GeoMet dataset mean)")
     b.pair("Material mined, t/h", "mine", "tph_mined", "none", 0)
     b.pair("Coarse ore stockpile, t", "stockpile-cos", "stock_t", "none", 0)
     b.pair("ROM stockpile, t", "stockpile-rom", "stock_t", "none", 0)
@@ -175,8 +182,19 @@ def overview():
     b.pair("Diesel per tonne hauled, L/t", "mine", "diesel_l_t", "none", 3)
     b.pair("Crusher specific energy, kWh/t", "mine", "crusher_kwh_t", "none", 3)
     b.pair("Crusher power, kW", "crusher-01", "power_kw", "none", 0)
-    b.pair("Site electrical demand (crusher + plant), kW", "mine", "site_power_kw", "none", 0)
+    b.pair("15-min electrical demand (crusher + plant), kW", "power-grid", "demand_15min_kw", "none", 0)
+    b.pair("Site specific energy, kWh/t plant feed", "mine", "site_kwh_t", "none", 1)
+    b.pair("Fuel bay stock, L", "fuel-bay", "stock_l", "none", 0)
+    b.pair("Fuel bay hours of cover, h", "fuel-bay", "hours_of_cover", "none", 1)
+    b.pair("Trucks parked by fuel rationing", "dispatcher", "fuel_rationed_trucks", "none", 0)
+
+    b.row("Maintenance and reliability")
     b.pair("Equipment availability, %", "mine", "availability_pct", "none", 1)
+    b.pair("Fleet mean health, %", "maintenance", "fleet_health_pct", "none", 1)
+    b.pair("Crusher health, %", "crusher-01", "health_pct", "none", 1)
+    b.pair("Failures (cumulative)", "maintenance", "failures_total", "none", 0)
+    b.pair("Planned maintenance jobs (cumulative)", "maintenance", "planned_total", "none", 0)
+    b.pair("Crusher failure probability, next 8 h", "crusher-01", "failure_prob_8h", "percentunit", 2)
 
     b.row("Equipment states (live)")
     b.panel("state-timeline", "Haul truck states", [q_state(f"^{NS}:truck-[0-9]+$", "state")], 24, 9,
@@ -199,7 +217,7 @@ def overview():
     b.pair("Mass balance residual, t (must stay ~0)", "mine", "mass_balance_residual_t", "none", 6, w=12,
            description="tonnes dug + opening stocks - (stocks + payload in trucks + waste dumped + plant feed)")
     b.pair("Fuel balance residual, L (must stay ~0)", "mine", "fuel_balance_residual_l", "none", 6, w=12,
-           description="opening tank contents + fuel dispensed - fuel burned - tank contents now")
+           description="opening diesel (tanks + bay) + deliveries - (burned + written off + tanks + bay)")
     return b.d
 
 

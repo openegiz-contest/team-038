@@ -4,7 +4,8 @@ import json
 import pytest
 
 from twinvision.sim import params as P
-from twinvision.sim.engine import MineSim
+from twinvision.sim.blocks import geomet
+from twinvision.sim.engine import Health, MineSim
 from twinvision.sim.scenarios import normalise
 from twinvision.sim.twins import definitions, ditto_message, snapshot
 
@@ -65,8 +66,10 @@ def test_plausible_operation():
     k = sim.kpis()
     assert 5000 < k["tph_mined"] < 11000
     assert 1500 < k["plant_feed_tph"] <= P.PLANT["target_tph"] + 1
-    assert 0.3 < k["plant_feed_grade"] < 0.8
-    assert 0.1 < k["crusher_kwh_t"] < 0.4
+    assert P.PLANT["grade_min"] <= k["plant_feed_grade"] <= P.PLANT["grade_max"]
+    assert 0.2 < k["crusher_kwh_t"] < 0.4                      # Bond: 0.0129 kWh/t per kWh/t of BWi
+    assert 14 < k["site_kwh_t"] < 20
+    assert 8 < k["copper_tph"] < 16
     assert 0.1 < k["diesel_l_t"] < 0.6
 
 
@@ -131,15 +134,103 @@ def test_undo_restores_normal_operation():
     assert abs(kl["tph_mined"] - kb["tph_mined"]) < 0.15 * kb["tph_mined"]
 
 
+def test_fuel_shortage_rations_trucks_and_protects_ore():
+    live, base = paired({"fuel_shortage": {"resupply_lph": 0.0, "bay_stock_l": 8000.0}}, 2, 4)
+    assert live.dispatcher.ration > 0
+    parked = [t for t in live.trucks if t.why == "fuel rationing"]
+    assert len(parked) == live.dispatcher.ration
+    assert live.ex_by_id["ex-03"].rate.v < 0.2 * base.ex_by_id["ex-03"].rate.v   # waste stripping suspended
+    kl, kb = live.kpis(), base.kpis()
+    assert kl["diesel_lph"] < 0.6 * kb["diesel_lph"]
+    assert kl["tph_ore"] > 0.6 * kb["tph_ore"]
+    assert live.bay_l >= 0 and abs(live.fuel_balance()) < 1e-6
+    live.set_scenarios({})
+    run(live, 2)
+    assert live.dispatcher.ration == 0
+
+
+def test_energy_cap_limits_demand_and_plant():
+    cap = 28000.0
+    live, base = paired({"energy_cap": {"cap_kw": cap}}, 2, 2)
+    assert live.demand_kw <= cap + 1
+    assert base.demand_kw > cap
+    assert live.kpis()["plant_feed_tph"] < 0.9 * base.kpis()["plant_feed_tph"]
+    live.set_scenarios({})
+    run(live, 1)
+    assert live.plant_cap_tph == P.PLANT["target_tph"]
+
+
+def test_health_failures_are_reproducible():
+    a, b = Health("truck", "truck-01", 1), Health("truck", "truck-01", 1)
+    fa = [i for i in range(20000) if a.use(60.0, 1.0)]
+    fb = [i for i in range(20000) if b.use(60.0, 1.0)]
+    assert fa == fb and fa
+    worn, fresh = Health("truck", "x", 1), Health("truck", "x", 1)
+    worn.h, fresh.h = 20.0, 95.0
+    assert worn.p_fail(8) > 5 * fresh.p_fail(8)
+
+
+def test_maintenance_planner_pulls_worn_truck():
+    sim = MineSim(42)
+    worn = sim.trucks[0]
+    worn.health.h = 5.0
+    worn.health.budget = 1e9                                   # no breakdown before the review
+    run(sim, P.MAINT["review_s"] / 3600 + 1)
+    assert worn.health.pms >= 1 or worn.state == "maintenance" or worn.health.pm_pending
+    assert "PM truck-01" in " ".join(e[1] for e in sim.events)
+
+
+def test_crusher_pm_waits_for_stockpile_cover():
+    sim = MineSim(42)
+    sim.crusher.health.h = 50.0
+    sim.crusher.health.budget = 1e9
+    for _ in range(int(10 * 3600)):
+        sim.step(1.0)
+        if sim.crusher.health.in_pm(sim.t):
+            break
+    assert sim.crusher.health.pms == 1
+    assert sim.cos.t >= 0.4 * sim.cos.capacity                  # stock built up before the stop
+    assert any("building COS" in e[1] for e in sim.events)
+
+
+def test_blending_keeps_feed_in_band():
+    for seed in (1, 3):
+        sim = run(MineSim(seed), 8)
+        assert P.PLANT["grade_min"] <= sim.kpis()["plant_feed_grade"] <= P.PLANT["grade_max"]
+
+
+def test_low_grade_zone_reduces_copper_and_shifts_trucks():
+    live, base = paired({"low_grade_zone": {"factor": 0.5, "clusters": ["blocks-north"]}}, 2, 4)
+    kl, kb = live.kpis(), base.kpis()
+    assert kl["plant_feed_grade"] < kb["plant_feed_grade"]
+    assert kl["copper_tph"] < kb["copper_tph"]
+    assert live.dispatcher.assigned["ex-01"].v < base.dispatcher.assigned["ex-01"].v
+
+
+def test_block_model_uses_geomet_distributions():
+    cu, bwi = geomet()
+    assert len(cu) > 1500 and len(bwi) > 50
+    assert 0.6 < sum(cu) / len(cu) < 0.9 and 18 < sum(bwi) / len(bwi) < 23
+    sim = MineSim(42)
+    north, south = sim.clusters["blocks-north"], sim.clusters["blocks-south"]
+    assert min(b.grade for b in north.blocks) > P.CUTOFF_GRADE
+    assert max(b.grade for b in south.blocks) < P.CUTOFF_GRADE
+    assert all(min(bwi) - 0.01 <= b.bwi <= max(bwi) + 0.01 for b in north.blocks)
+
+
 def test_scenario_normalisation():
     feats = {
         "crusher_failure": {"properties": {"active": True}},
         "road_closure": {"properties": {"active": True, "segments": ["road-s04", "bogus"]}},
         "excavator_breakdown": {"properties": {"active": False, "excavators": ["ex-01"]}},
         "hardness_spike": {"properties": {"active": True, "factor": 9, "clusters": ["blocks-north"]}},
+        "fuel_shortage": {"properties": {"active": True, "resupply_lph": -5}},
+        "energy_cap": {"properties": {"active": True, "cap_kw": "abc"}},
     }
     assert normalise(feats) == {"crusher_failure": True, "road_closure": ["s04"],
-                                "hardness_spike": {"factor": 2.5, "clusters": ["blocks-north"]}}
+                                "hardness_spike": {"factor": 2.5, "clusters": ["blocks-north"]},
+                                "fuel_shortage": {"resupply_lph": 0.0, "bay_stock_l": 8000.0},
+                                "energy_cap": {"cap_kw": 28000.0}}
     assert normalise({}) == {}
     assert normalise(None) == {}
 
@@ -160,12 +251,16 @@ def test_twin_definitions_and_messages():
     assert msg["value"]["payload_t"]["properties"]["unit"] == "t"
 
 
-@pytest.mark.parametrize("name", ["mine", "crusher-01", "truck-01", "road-s04", "plant-feed"])
+@pytest.mark.parametrize("name", ["mine", "crusher-01", "truck-01", "ex-01", "road-s04", "plant-feed",
+                                  "maintenance", "fuel-bay", "power-grid", "dispatcher"])
 def test_feature_types_are_stable(name):
     """InfluxDB rejects a field whose type changes; keep each feature's type fixed."""
     sim = MineSim(5)
     types = {}
-    for _ in range(40):
+    for i in range(40):
+        if i == 10:
+            sim.set_scenarios({"energy_cap": {"cap_kw": 25000.0}, "fuel_shortage": {"resupply_lph": 0.0,
+                                                                                      "bay_stock_l": 5000.0}})
         run(sim, 0.25)
         for feat, props in snapshot(sim)[name].items():
             t = type(props["value"]).__name__

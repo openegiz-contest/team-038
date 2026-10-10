@@ -2,7 +2,7 @@
 
 Every number is either taken from a public manufacturer data sheet (noted
 "spec"), a standard engineering approximation (noted "approx."), or chosen for
-this fictional site (noted "site", synthetic). See twinvision/DATA.md.
+this fictional site (noted "site", synthetic). See DATA_LICENSES.md and twinvision/DECISIONS.md.
 """
 
 NAMESPACE = "org.twinvision.copper"
@@ -67,15 +67,18 @@ EXCAVATORS = [
 
 # --- Ore definition ----------------------------------------------------------
 CUTOFF_GRADE = 0.25            # % Cu, site: below this a block is waste
-REF_BWI = 14.0                 # kWh/t, reference Bond work index of the ore
+REF_BWI = 20.0                 # kWh/t, reference Bond work index (GeoMet dataset mean, see blocks.py)
+CU_RECOVERY = 0.879            # GeoMet flotation.csv: mean locked-cycle-test recovery, 52 tests
+                               # (no significant grade dependence in that data, R2 = 0.006)
 
 # --- Primary crusher: 60-89 class gyratory ---------------------------------
 CRUSHER = {
-    "model": "60-89 class gyratory crusher",
-    "installed_kw": 600.0,       # spec class: 600 kW motor
-    "idle_kw": 90.0,             # approx.: no-load power ~15 % of installed
+    "model": "60-110 class gyratory crusher",
+    "installed_kw": 750.0,       # spec class: 750 kW motor
+    "idle_kw": 110.0,            # approx.: no-load power ~15 % of installed
     "vol_cap_tph": 3500.0,       # site: volumetric limit at the chosen CSS
-    "kwh_per_t_per_bwi": 0.012,  # approx.: 0.17 kWh/t at BWi 14 (primary crushing 0.1-0.4 kWh/t)
+    # Bond's law W = 10 Wi (1/sqrt(P80) - 1/sqrt(F80)), F80 600 mm -> P80 150 mm, in um:
+    "kwh_per_t_per_bwi": 0.0129,
     "pocket_t": 460.0,           # site: dump pocket, two truck loads
     "tip_s": 45.0,               # approx.
 }
@@ -84,8 +87,8 @@ CRUSHER = {
 ROM = {
     "capacity_t": 150000.0,      # site
     "initial_t": 25000.0,        # site
-    "initial_grade": 0.42,       # site, % Cu
-    "initial_bwi": 13.5,
+    "initial_grade": 0.55,       # site, % Cu
+    "initial_bwi": 19.5,
     "tip_spots": 2,
     "tip_s": 50.0,
     "loader_model": "Cat 994K class wheel loader",
@@ -95,43 +98,76 @@ ROM = {
 
 # --- Coarse ore stockpile (crusher product) and concentrator feed ------------
 COS = {
-    "capacity_t": 6000.0,        # site: live capacity, ~3 h of plant feed (small on purpose, see DATA.md)
+    "capacity_t": 6000.0,        # site: live capacity, ~3 h of plant feed (small on purpose, see DECISIONS.md)
     "initial_t": 3000.0,
-    "initial_grade": 0.52,
-    "initial_bwi": 14.0,
+    "initial_grade": 0.70,
+    "initial_bwi": 20.0,
 }
 
 PLANT = {
     "target_tph": 2000.0,        # site: ~16 Mt/a at 92 % availability
-    "grade_min": 0.45,           # site: feed grade band, % Cu
-    "grade_max": 0.65,
+    "grade_min": 0.55,           # site: feed grade band, % Cu
+    "grade_max": 0.85,
     "base_kw": 2500.0,           # approx.: pumps, flotation, auxiliaries
-    "kwh_per_t_per_bwi": 0.95,   # approx.: SAG+ball grinding ~13 kWh/t at BWi 14
+    # Bond's law, F80 150 mm -> P80 150 um: 10 (1/sqrt(150) - 1/sqrt(150000)) = 0.79 kWh/t per Wi
+    "kwh_per_t_per_bwi": 0.79,
 }
 
 WASTE_DUMP = {"tip_spots": 3, "tip_s": 50.0}
 
-FUEL_BAY = {"spots": 2}
+FUEL_BAY = {
+    "spots": 2,
+    "capacity_l": 80000.0,       # site: diesel storage at the fuel bay
+    "initial_l": 50000.0,
+    "resupply_lph": 2200.0,      # site: road tanker deliveries, averaged (fleet burns ~1,500 L/h)
+    "min_dispense_l": 300.0,     # a truck waits in the bay queue if less is in stock
+}
+
+WORKSHOP = {"bays": 2}
+
+GRID = {
+    "demand_window_s": 900.0,    # 15-min demand interval used for peak-demand billing
+}
+
+# --- Maintenance (condition-based) -------------------------------------------
+# Health is a 0-100 condition index. It falls with use (wear_ph per operating
+# hour at nominal intensity). Failure hazard per operating hour grows as health
+# falls: lambda = lambda0_ph * exp(k * (1 - health/100)). All site/synthetic;
+# MTTR and PM durations are typical orders of magnitude for this equipment.
+MAINT = {
+    "truck": {"wear_ph": 1.6, "lambda0_ph": 1 / 300, "k": 4.5, "mttr_h": 4.0, "pm_h": 2.0,
+              "loss_tph": 900.0},
+    "excavator": {"wear_ph": 1.3, "lambda0_ph": 1 / 300, "k": 4.5, "mttr_h": 5.0, "pm_h": 3.0,
+                  "loss_tph": None},
+    "crusher": {"wear_ph": 1.0, "lambda0_ph": 1 / 400, "k": 4.5, "mttr_h": 6.0, "pm_h": 3.0,
+                "loss_tph": None},
+    "horizon_h": 8.0,            # look-ahead for the failure probability
+    "unplanned_factor": 1.3,     # an unplanned stop costs more than the same planned stop
+    "review_s": 900.0,           # planner runs every 15 simulated minutes
+}
 
 # --- Block model (synthetic, see blocks.py) ----------------------------------
 BLOCK = {"dx": 10.0, "dy": 10.0, "dz": 15.0, "density": 2.6}   # m, m, m, t/m3 in situ
 
+# Grade and hardness of every block are drawn from the empirical distributions
+# of the GeoMet dataset (Cu assays: drillholes.csv, Bond work index from the
+# grindability tests in comminution.csv), restricted to a quantile range per
+# geological domain; the spatial pattern is synthetic (see blocks.py).
 CLUSTERS = [
     {"id": "blocks-north", "bench_z": -120, "excavator": "ex-01", "nx": 12, "ny": 6,
-     "grade_mean": 0.60, "grade_sd": 0.16, "bwi_mean": 15.0, "bwi_sd": 1.6,
-     "rock": "quartz monzonite porphyry (hypogene)"},
+     "cu_q": (0.40, 0.97), "bwi_q": (0.30, 1.00), "rock": "hypogene sulphide ore (high grade, hard)"},
     {"id": "blocks-east", "bench_z": -60, "excavator": "ex-02", "nx": 12, "ny": 6,
-     "grade_mean": 0.46, "grade_sd": 0.14, "bwi_mean": 13.0, "bwi_sd": 1.4,
-     "rock": "andesite-hosted porphyry (transitional)"},
+     "cu_q": (0.18, 0.72), "bwi_q": (0.00, 0.70), "rock": "transitional sulphide ore (medium grade)"},
     {"id": "blocks-south", "bench_z": -15, "excavator": "ex-03", "nx": 12, "ny": 6,
-     "grade_mean": 0.08, "grade_sd": 0.04, "bwi_mean": 11.0, "bwi_sd": 1.2,
-     "rock": "leached cap andesite (waste)"},
+     "cu_q": (0.00, 0.17), "bwi_q": (0.00, 0.35), "rock": "leached cap (waste)"},
 ]
+SUPPORT_FACTOR = 0.7           # affine support correction: 2 m assay -> 3,900 t block variance
 
 # --- Dispatcher ----------------------------------------------------------------
 DISPATCH = {
     "target_tph": {"ex-01": 1250.0, "ex-02": 1050.0, "ex-03": 4500.0},  # site plan, strip ratio ~2
-    "deficit_weight_s": 900.0,   # s of expected-start-time a 100 % target deficit is worth
+    "deficit_weight_s": 900.0,
+    "grade_weight_s": 600.0,     # s of start time worth moving the feed grade a full half-band toward target   # s of expected-start-time a 100 % target deficit is worth
     "cos_high_frac": 0.65,       # above this COS level ore goes to the ROM pad
     "cos_reclaim_frac": 0.45,    # below this the loader reclaims ROM into the crusher
     "crusher_wait_max_s": 600.0,  # expected wait at the crusher above which ore goes to ROM

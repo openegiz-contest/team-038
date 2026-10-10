@@ -4,6 +4,8 @@ Used by the setup job (definitions) and by the simulator (features). The
 schema is documented in twinvision/SCHEMA.md.
 """
 
+import json
+
 from . import params as P
 from .layout import FACILITIES, NODES, PIT_FLOOR_Z, BENCH_HEIGHT, bench_contours
 
@@ -54,7 +56,7 @@ def definitions(sim, baseline=False):
         out[thing_id(name + sfx)] = {"policyId": POLICY, "attributes": a, "features": {}}
 
     add("mine", "Mine", None, P.SITE_NAME,
-        description="Fictional open-pit copper mine in Kazakhstan (synthetic data, see DATA.md)",
+        description="Fictional open-pit copper mine in Kazakhstan (synthetic, see DATA_LICENSES.md)",
         commodity="copper", time_compression="see sim_time_h feature",
         **({"baseline_twin": thing_id("mine" + BASELINE)} if not baseline else {}))
     add("pit", "Pit", "mine", "Main pit",
@@ -94,8 +96,28 @@ def definitions(sim, baseline=False):
         grade_min_pct=P.PLANT["grade_min"], grade_max_pct=P.PLANT["grade_max"], location=fac["plant-feed"])
     add("waste-dump", "WasteDump", "mine", "Waste dump", location=fac["waste-dump"], node="DUMP")
     add("dispatcher", "DispatcherController", "mine", "Truck dispatcher",
-        strategy="min expected loading start with target-rate deficit; ore to crusher/ROM by COS level and crusher wait",
-        targets_tph=P.DISPATCH["target_tph"])
+        strategy=("empty trucks: min expected loading start - target-rate deficit - feed-grade blend benefit; "
+                  "ore to crusher or ROM by crusher state and wait, COS level and feed grade band; "
+                  "fuel rationing parks trucks when diesel cover is short"),
+        targets_tph=P.DISPATCH["target_tph"], target_grade_pct=(P.PLANT["grade_min"] + P.PLANT["grade_max"]) / 2,
+        controls=[thing_id(t.id + sfx) for t in sim.trucks])
+    M = P.MAINT
+    add("maintenance", "MaintenancePlanner", "mine", "Condition-based maintenance planner",
+        strategy=("plan maintenance when P(failure within horizon) x MTTR x loss rate x unplanned factor "
+                  "exceeds planned duration x loss rate; crusher loss discounted by COS hours of feed"),
+        horizon_h=M["horizon_h"], unplanned_factor=M["unplanned_factor"], review_interval_s=M["review_s"],
+        workshop_bays=P.WORKSHOP["bays"],
+        failure_model={k: {"lambda0_per_h": round(M[k]["lambda0_ph"], 5), "k": M[k]["k"],
+                           "wear_pct_per_h": M[k]["wear_ph"], "mttr_h": M[k]["mttr_h"], "pm_h": M[k]["pm_h"]}
+                       for k in ("truck", "excavator", "crusher")},
+        maintains=[thing_id(n + sfx) for n in ["crusher-01"] + [e.id for e in sim.excavators] +
+                   [t.id for t in sim.trucks]])
+    add("fuel-bay", "FuelBay", "mine", "Diesel fuel bay", capacity_l=P.FUEL_BAY["capacity_l"],
+        spots=P.FUEL_BAY["spots"], normal_resupply_lph=P.FUEL_BAY["resupply_lph"], location=fac["workshop"],
+        node="WS", supplies=[thing_id(t.id + sfx) for t in sim.trucks] + [thing_id("stockpile-rom" + sfx)])
+    add("power-grid", "PowerGrid", "mine", "Site electrical supply",
+        demand_window_s=P.GRID["demand_window_s"],
+        supplies=[thing_id("crusher-01" + sfx), thing_id("plant-feed" + sfx)])
     if not baseline:
         add("scenario-controller", "ScenarioController", "mine", "What-if scenario controller",
             description="Written by the TwinVision web API; the live simulator applies it")
@@ -120,6 +142,22 @@ def scenario_defaults():
         "excavator_breakdown": {"properties": {"active": False, "excavators": ["ex-01"]}},
         "hardness_spike": {"properties": {"active": False, "factor": 1.4, "clusters": ["blocks-north"]}},
         "low_grade_zone": {"properties": {"active": False, "factor": 0.6, "clusters": ["blocks-north"]}},
+        "fuel_shortage": {"properties": {"active": False, "resupply_lph": 0.0, "bay_stock_l": 8000.0}},
+        "energy_cap": {"properties": {"active": False, "cap_kw": 28000.0}},
+    }
+
+
+def health_features(m, sim):
+    hl = m.health
+    t = sim.t
+    status = ("breakdown" if hl.broken(t) else "in_maintenance" if hl.in_pm(t) or
+              getattr(m, "state", "") == "maintenance" else "pm_planned" if hl.pm_pending else "ok")
+    return {
+        "health_pct": f(r(hl.h, 1), "%"),
+        "failure_prob_8h": f(r(hl.p_fail(P.MAINT["horizon_h"]), 4), "probability"),
+        "maintenance_status": f(status),
+        "failures_total": f(hl.failures, "failures"),
+        "planned_maintenance_total": f(hl.pms, "jobs"),
     }
 
 
@@ -131,7 +169,7 @@ def snapshot(sim):
     c = sim.crusher
     trucks_q = sum(1 for t in sim.trucks if t.state in ("queued", "waiting") or t.why)
     active = sorted(n for n, v in sim.scenarios.items() if v)
-    site_kw = c.power_kw + sim.plant_kw
+    site_kw = sim.site_kw
     out["mine"] = {
         "sim_time_h": f(r(sim.t / 3600.0, 3), "h"),
         "tph_mined": f(r(k["tph_mined"], 1), "t/h"),
@@ -143,6 +181,9 @@ def snapshot(sim):
         "mean_queue_min": f(r(k["mean_queue_min"], 2), "min"),
         "availability_pct": f(r(k["availability_pct"], 2), "%"),
         "crusher_kwh_t": f(r(k["crusher_kwh_t"], 4), "kWh/t"),
+        "site_kwh_t": f(r(k["site_kwh_t"], 3), "kWh/t"),
+        "copper_tph": f(r(k["copper_tph"], 3), "t/h"),
+        "copper_total_t": f(r(sim.copper_t, 2), "t"),
         "diesel_l_t": f(r(k["diesel_l_t"], 4), "L/t"),
         "diesel_lph": f(r(k["diesel_lph"], 1), "L/h"),
         "site_power_kw": f(r(site_kw, 1), "kW"),
@@ -155,6 +196,7 @@ def snapshot(sim):
         "trucks_queued": f(trucks_q, "trucks"),
         "active_scenarios": f(",".join(active) if active else "none"),
         "last_event": f(sim.events[-1][1] if sim.events else ""),
+        "event_log": f(json.dumps([{"t_h": round(t / 3600.0, 3), "text": x} for t, x in list(sim.events)[-12:]])),
     }
     out["pit"] = {
         "trucks_in_pit": f(sum(1 for t in sim.trucks if t.state != "parked"), "trucks"),
@@ -185,6 +227,7 @@ def snapshot(sim):
             "face_grade": f(r(ex.cluster.face_grade, 3), "% Cu"),
             "face_bwi": f(r(ex.cluster.face_bwi, 2), "kWh/t"),
             "utilization_pct": f(r(100 * ex.util.v, 1), "%"),
+            **health_features(ex, sim),
         }
     for tr in sim.trucks:
         out[tr.id] = {
@@ -206,6 +249,7 @@ def snapshot(sim):
             "fuel_burned_l": f(r(tr.fuel_burned, 1), "L"),
             "last_queue_min": f(r(tr.last_wait / 60.0, 2), "min"),
             "waiting_reason": f(tr.why),
+            **health_features(tr, sim),
         }
     for sid, seg in sim.net.segments.items():
         out[f"road-{sid}"] = {
@@ -226,6 +270,7 @@ def snapshot(sim):
         "queue_len": f(len(c.queue) + (1 if c.tipping else 0), "trucks"),
         "tonnes_total": f(r(c.tonnes, 1), "t"),
         "energy_kwh": f(r(c.kwh, 1), "kWh"),
+        **health_features(c, sim),
     }
     out["stockpile-rom"] = {
         "stock_t": f(r(sim.rom.t, 1), "t"),
@@ -259,8 +304,13 @@ def snapshot(sim):
         "grade_max": f(P.PLANT["grade_max"], "% Cu"),
         "grade_status": f(status),
         "power_kw": f(r(sim.plant_kw, 1), "kW"),
+        "capacity_tph": f(r(sim.plant_cap_tph, 1), "t/h"),
+        "limited_by": f("grid_cap" if sim.plant_cap_tph < P.PLANT["target_tph"] - 1 else
+                        "feed" if sim.plant_tph < sim.plant_cap_tph - 1 else "none"),
         "tonnes_total": f(r(sim.plant_t, 1), "t"),
         "copper_t": f(r(sim.plant_cu_t, 2), "t"),
+        "copper_tph": f(r(k["copper_tph"], 3), "t/h"),
+        "recovered_copper_t": f(r(sim.copper_t, 2), "t"),
     }
     out["waste-dump"] = {
         "tonnes_total": f(r(sim.waste_t, 1), "t"),
@@ -282,6 +332,48 @@ def snapshot(sim):
         "ore_to_rom_total": f(d.to_rom, "loads"),
         **{f"trucks_{e}": f(n, "trucks") for e, n in alloc.items()},
         **{f"assigned_tph_{e}": f(r(d.assigned[e].v, 1), "t/h") for e in alloc},
+        "blend_diversions_total": f(d.blend_diverts, "loads"),
+        "fuel_rationed_trucks": f(d.ration, "trucks"),
+        "last_fuel_decision": f(d.fuel_note),
+    }
+    mp = sim.maintenance
+    units = [sim.crusher, *sim.excavators, *sim.trucks]
+    out["maintenance"] = {
+        "decisions_total": f(mp.decisions, "decisions"),
+        "last_decision": f(mp.last),
+        "expected_loss_avoided_t": f(r(mp.avoided_t, 0), "t"),
+        "units_broken": f(sum(1 for u in units if u.health.broken(sim.t)), "units"),
+        "units_in_maintenance": f(sum(1 for u in units if u.health.in_pm(sim.t) or
+                                      getattr(u, "state", "") == "maintenance"), "units"),
+        "units_pm_planned": f(sum(1 for u in units if u.health.pm_pending), "units"),
+        "failures_total": f(sum(u.health.failures for u in units), "failures"),
+        "planned_total": f(sum(u.health.pms for u in units), "jobs"),
+        "fleet_health_pct": f(r(sum(u.health.h for u in units) / len(units), 1), "%"),
+    }
+    burn = sim.k["fuel"].v
+    net = burn - sim.resupply_lph()
+    out["fuel-bay"] = {
+        "stock_l": f(r(sim.bay_l, 1), "L"),
+        "fill_pct": f(r(100 * sim.bay_l / P.FUEL_BAY["capacity_l"], 2), "%"),
+        "resupply_lph": f(r(sim.resupply_lph(), 1), "L/h"),
+        "consumption_lph": f(r(burn, 1), "L/h"),
+        "hours_of_cover": f(r(min(999.0, sim.bay_l / net) if net > 1 else 999.0, 2), "h"),
+        "dispensed_total_l": f(r(sim.fuel_dispensed, 1), "L"),
+        "trucks_refueling": f(len(sim.fuel_bay.active), "trucks"),
+        "queue_len": f(len(sim.fuel_bay.queue), "trucks"),
+        "status": f("supply_cut" if sim.scenarios.get("fuel_shortage") else "normal"),
+    }
+    cap = sim.energy_cap_kw()
+    out["power-grid"] = {
+        "site_power_kw": f(r(sim.site_kw, 1), "kW"),
+        "crusher_kw": f(r(c.power_kw, 1), "kW"),
+        "plant_kw": f(r(sim.plant_kw, 1), "kW"),
+        "demand_15min_kw": f(r(sim.demand_kw, 1), "kW"),
+        "peak_demand_kw": f(r(sim.peak_kw, 1), "kW"),
+        "cap_kw": f(r(cap, 1) if cap < float("inf") else 0.0, "kW"),
+        "cap_active": f(cap < float("inf")),
+        "energy_total_mwh": f(r(sim.site_kwh / 1000.0, 3), "MWh"),
+        "kwh_per_t": f(r(k["site_kwh_t"], 3), "kWh/t"),
     }
     return out
 
@@ -289,12 +381,17 @@ def snapshot(sim):
 def truck_state(tr):
     kind = tr.dest[0] if tr.dest else ""
     if tr.state == "travel":
-        if tr.why:
+        if tr.why and tr.why != "fuel rationing":
             return "waiting_road"
-        return "hauling" if tr.payload > 0 else ("to_fuel_bay" if kind == "fuel" else "returning")
+        if tr.payload > 0:
+            return "hauling"
+        return {"fuel": "to_fuel_bay", "workshop": "to_workshop", "park": "to_park"}.get(kind, "returning")
     if tr.state == "queued":
         return {"excavator": "queued_at_shovel", "crusher": "queued_at_crusher", "rom": "queued_at_rom",
-                "dump": "queued_at_dump", "fuel": "queued_at_fuel_bay"}.get(kind, "queued")
+                "dump": "queued_at_dump", "fuel": "queued_at_fuel_bay",
+                "workshop": "queued_at_workshop"}.get(kind, "queued")
+    if tr.state == "broken":
+        return "breakdown"
     if tr.state == "tipping":
         return {"crusher": "dumping_crusher", "rom": "dumping_rom", "dump": "dumping_waste"}.get(kind, "dumping")
     return tr.state

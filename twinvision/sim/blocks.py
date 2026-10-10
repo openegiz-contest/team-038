@@ -1,17 +1,54 @@
 """Block model: one cluster of blocks in front of every excavator face.
 
-Grades and hardness are synthetic but spatially correlated: a seeded sum of
-Gaussian kernels gives a smooth field, mapped to a lognormal grade
-distribution (typical of porphyry copper) with the cluster's mean and
-standard deviation. Bond work index is partly correlated with grade. The
-cluster is dug block by block in a serpentine order away from the face.
+Values come from real data, the spatial pattern is synthetic:
+- a seeded sum of Gaussian kernels gives a smooth standard-normal field per
+  cluster (one for grade, one partly correlated with it for hardness);
+- each field value is mapped through the normal CDF onto the cluster's
+  quantile range of the empirical GeoMet distributions (Cu % from
+  drillholes.csv, Bond work index computed from the grindability tests in
+  comminution.csv; CC BY 4.0, see DATA_LICENSES.md);
+- an affine support correction shrinks 2 m assay variability to block scale.
+The cluster is dug block by block in a serpentine order away from the face.
 """
 
+import csv
 import math
+import os
 import random
+from functools import lru_cache
 
 from . import params as P
 from .layout import NODES
+
+DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "geomet")
+
+
+@lru_cache(maxsize=None)
+def geomet():
+    """Sorted Cu (%) assays and Bond work indices (kWh/t) from the GeoMet dataset."""
+    with open(os.path.join(DATA, "drillholes.csv"), newline="") as fh:
+        cu = sorted(float(r["Cu ppm"]) / 1e4 for r in csv.DictReader(fh) if r["Cu ppm"])
+    bwi = []
+    with open(os.path.join(DATA, "comminution.csv"), newline="") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                a, gbp, p80, f80 = float(r["A"]), float(r["M"]), float(r["P80"]), float(r["F80"])
+            except (KeyError, ValueError):
+                continue
+            # Bond ball mill work index (metric): A = closing screen um, M = grindability g/rev
+            bwi.append(44.5 / (a ** 0.23 * gbp ** 0.82 * (10 / math.sqrt(p80) - 10 / math.sqrt(f80))) * 1.1023)
+    return cu, sorted(bwi)
+
+
+def quantile(sorted_vals, q):
+    pos = min(max(q, 0.0), 1.0) * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+def phi(z):
+    return 0.5 * (1 + math.erf(z / math.sqrt(2)))
 
 
 class Block:
@@ -55,18 +92,28 @@ class BlockCluster:
 
         zg = _field(rng, nx, ny)
         zh = _field(rng, nx, ny)
-        cv = spec["grade_sd"] / spec["grade_mean"]
-        s_log = math.sqrt(math.log(1 + cv * cv))
+        cu_all, bwi_all = geomet()
+        (q0, q1), (h0, h1) = spec["cu_q"], spec["bwi_q"]
+
+        def cu_at(z):
+            return quantile(cu_all, q0 + (q1 - q0) * phi(z))
+
+        def bwi_at(z):
+            return quantile(bwi_all, h0 + (h1 - h0) * phi(z))
+
+        grid = [(i, j) for j in range(ny) for i in range(nx)]
+        raw = {ij: cu_at(zg[ij]) for ij in grid}
+        mean = sum(raw.values()) / len(raw)
         self.blocks = []
         for j in range(ny):
             cols = range(nx) if j % 2 == 0 else range(nx - 1, -1, -1)
             for i in cols:
                 cx = fx + ux * (15 + (j + 0.5) * dy) + vx * ((i - nx / 2 + 0.5) * dx)
                 cy = fy + uy * (15 + (j + 0.5) * dy) + vy * ((i - nx / 2 + 0.5) * dx)
-                grade = spec["grade_mean"] * math.exp(s_log * zg[(i, j)] - s_log * s_log / 2)
-                bwi = spec["bwi_mean"] + spec["bwi_sd"] * (0.5 * zg[(i, j)] + 0.866 * zh[(i, j)])
-                self.blocks.append(Block(i, j, round(cx, 1), round(cy, 1), round(grade, 3),
-                                         round(max(8.0, bwi), 2), tonnes))
+                grade = mean + P.SUPPORT_FACTOR * (raw[(i, j)] - mean)
+                bwi = bwi_at(0.5 * zg[(i, j)] + 0.866 * zh[(i, j)])
+                self.blocks.append(Block(i, j, round(cx, 1), round(cy, 1), round(max(0.01, grade), 3),
+                                         round(bwi, 2), tonnes))
         self.k = 0
         self.cut = 1
         self.mined_t = 0.0

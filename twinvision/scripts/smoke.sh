@@ -15,7 +15,7 @@ HOST=127.0.0.1
 DITTO="http://$HOST:$DITTO_PORT"
 GRAFANA="http://$HOST:$GRAFANA_PORT"
 NS="org.twinvision.copper"
-EXPECTED_TWINS=69
+EXPECTED_TWINS=75
 FAILED=0
 
 pass() { printf '  \033[32mok\033[0m    %s\n' "$1"; }

@@ -25,10 +25,13 @@ mine
 ├── plant-feed                                         PlantFeed
 ├── waste-dump                                         WasteDump
 ├── dispatcher                                         DispatcherController
+├── maintenance                                        MaintenancePlanner
+├── fuel-bay                                           FuelBay
+├── power-grid                                         PowerGrid
 └── scenario-controller   (live copy only)             ScenarioController
 ```
 
-The baseline tree is the same under `mine-baseline`. Total: 35 live + 34 baseline = 69 twins.
+The baseline tree is the same under `mine-baseline`. Total: 38 live + 37 baseline = 75 twins.
 
 ## Relations
 
@@ -43,6 +46,10 @@ Material flow and physical links are attributes holding thing ids or road node n
 | Stockpile (ROM) | `feeds` | `crusher-01` (front-end loader reclaim) |
 | Crusher | `feeds` | `stockpile-cos` |
 | Stockpile (COS) | `feeds` | `plant-feed` |
+| DispatcherController | `controls` | every HaulTruck |
+| MaintenancePlanner | `maintains` | crusher, excavators, trucks |
+| FuelBay | `supplies` | every HaulTruck and the ROM loader (`stockpile-rom`) |
+| PowerGrid | `supplies` | `crusher-01`, `plant-feed` |
 
 Changing relations are features: a truck's `assigned_to` (excavator), `destination`, `segment`/`node` (where it is on the road graph), `source` (excavator its load came from); an excavator's `current_truck`.
 
@@ -62,14 +69,17 @@ Static: `road_nodes` (x, y, z, label of every graph node), `facilities` (map pos
 | `mean_queue_min` | min | truck queue and road wait time per haul cycle |
 | `availability_pct` | % | share of excavators, trucks and crusher in service |
 | `crusher_kwh_t` | kWh/t | crusher specific energy |
+| `site_kwh_t` | kWh/t | crusher + concentrator energy per tonne of plant feed |
+| `copper_tph`, `copper_total_t` | t/h, t | copper recovered to concentrate (feed × grade × 87.9 % recovery) |
 | `diesel_l_t`, `diesel_lph` | L/t, L/h | fleet diesel per tonne hauled, burn rate |
 | `site_power_kw` | kW | crusher + concentrator electrical demand |
 | `mined_total_t`, `plant_feed_total_t`, `copper_in_feed_t`, `waste_total_t` | t | totals since start |
 | `mass_balance_residual_t` | t | dug + opening stocks − (stocks + in trucks + waste + plant feed); ≈ 0 |
-| `fuel_balance_residual_l` | L | opening tanks + dispensed − burned − tanks now; ≈ 0 |
+| `fuel_balance_residual_l` | L | opening diesel (tanks + bay) + deliveries − (burned + written off + tanks + bay); ≈ 0 |
 | `trucks_queued` | trucks | trucks queued or waiting now |
 | `active_scenarios` | | comma-separated active what-ifs (`none`) |
-| `last_event` | | latest simulation event (failure, closure…) |
+| `last_event` | | latest simulation event (failure, closure, maintenance decision…) |
+| `event_log` | | JSON string: list of the last 12 events `{"t_h": <sim hours>, "text": ...}` |
 
 ### Pit (`pit`)
 Static: `rim` ellipse, `benches` (z, rx, ry of every bench crest), `floor_z`, `bench_height_m`.
@@ -86,15 +96,24 @@ Static: `blocks` = list of `[x, y, grade % Cu, Bond work index kWh/t, tonnes]` i
 | `face_rock` | | rock type |
 | `cut`, `remaining_t`, `mined_t` | | progress |
 
+### Health features (Excavator, HaulTruck, Crusher)
+
+| Feature | Unit | Meaning |
+|---|---|---|
+| `health_pct` | % | condition: falls with work (harder rock and heavier loads wear faster), restored by repair or planned maintenance |
+| `failure_prob_8h` | probability | P(failure within the 8 h planning horizon) from the current hazard rate |
+| `maintenance_status` | | `ok`, `pm_planned`, `in_maintenance`, `breakdown` |
+| `failures_total`, `planned_maintenance_total` | | counters |
+
 ### Excavator (`ex-*`)
 Static: `model`, `bucket_m3`, `bucket_t`, `role` (`ore`/`waste`), `location`, `node`, `digs`.
-State enum `state`: `loading`, `waiting_for_truck`, `failed`.
-Features: `x`, `y` (m), `tph`, `tonnes_total`, `passes_total`, `queue_len`, `current_truck`, `face_grade`, `face_bwi`, `utilization_pct`.
+State enum `state`: `loading`, `waiting_for_truck`, `failed` (what-if), `breakdown`, `maintenance`.
+Features: `x`, `y` (m), `tph`, `tonnes_total`, `passes_total`, `queue_len`, `current_truck`, `face_grade`, `face_bwi`, `utilization_pct`, health features.
 
 ### HaulTruck (`truck-*`)
 Static: `model`, `payload_t`, `empty_t`, `net_power_kw`, `tank_l`.
-State enum `state`: `parked`, `returning`, `queued_at_shovel`, `loading`, `hauling`, `queued_at_crusher`, `dumping_crusher`, `queued_at_rom`, `dumping_rom`, `queued_at_dump`, `dumping_waste`, `to_fuel_bay`, `queued_at_fuel_bay`, `refueling`, `waiting_road`, `waiting`.
-Features: `x`, `y` (m), `segment`, `node`, `speed_kmh`, `payload_t`, `load_grade`, `material` (`ore`/`waste`/empty), `destination`, `assigned_to`, `source`, `fuel_l`, `fuel_pct`, `fuel_burned_l`, `trips_total`, `tonnes_total`, `last_queue_min`, `waiting_reason`.
+State enum `state`: `parked`, `returning`, `queued_at_shovel`, `loading`, `hauling`, `queued_at_crusher`, `dumping_crusher`, `queued_at_rom`, `dumping_rom`, `queued_at_dump`, `dumping_waste`, `to_fuel_bay`, `queued_at_fuel_bay`, `refueling`, `waiting_road`, `waiting`, `breakdown`, `to_workshop`, `queued_at_workshop`, `maintenance`, `to_park`.
+Features: `x`, `y` (m), `segment`, `node`, `speed_kmh`, `payload_t`, `load_grade`, `material` (`ore`/`waste`/empty), `destination`, `assigned_to`, `source`, `fuel_l`, `fuel_pct`, `fuel_burned_l`, `trips_total`, `tonnes_total`, `last_queue_min`, `waiting_reason` (e.g. `fuel rationing`, `road closed`), health features.
 
 ### RoadSegment (`road-s*`)
 Static: `from_node`, `to_node`, `length_m`, `grade_pct` (rise from `from_node` to `to_node`), `speed_limit_kmh`, `capacity_trucks`, `geometry` (polyline of x, y, z).
@@ -102,8 +121,8 @@ State enum `status`: `open`, `closed`. Features: `trucks_on`, `passes_total`, `m
 
 ### Crusher (`crusher-01`)
 Static: `model`, `installed_kw`, `pocket_t`, `vol_cap_tph`, `location`, `feeds`.
-State enum `state`: `crushing`, `starved`, `blocked_cos_full`, `failed`.
-Features: `throughput_tph`, `throughput_avg_tph`, `capacity_tph` (power- and volume-limited at the current feed hardness), `pocket_t`, `feed_bwi`, `power_kw`, `kwh_t`, `queue_len`, `tonnes_total`, `energy_kwh`.
+State enum `state`: `crushing`, `starved`, `blocked_cos_full`, `failed` (what-if), `breakdown`, `maintenance`.
+Features: `throughput_tph`, `throughput_avg_tph`, `capacity_tph` (power- and volume-limited at the current feed hardness), `pocket_t`, `feed_bwi`, `power_kw`, `kwh_t`, `queue_len`, `tonnes_total`, `energy_kwh`, health features.
 
 ### Stockpile (`stockpile-rom`, `stockpile-cos`)
 Static: `role`, `capacity_t`, `location`, `feeds`.
@@ -113,14 +132,26 @@ COS features: `stock_t`, `grade`, `bwi`, `fill_pct`, `hours_of_feed`.
 ### PlantFeed (`plant-feed`)
 Static: `target_tph`, `grade_min_pct`, `grade_max_pct`, `location`.
 State enum `grade_status`: `in_spec`, `low`, `high`, `starved`.
-Features: `feed_tph`, `feed_grade` (instant), `feed_tph_avg`, `feed_grade_avg`, `target_tph`, `grade_min`, `grade_max`, `power_kw`, `tonnes_total`, `copper_t`.
+Features: `feed_tph`, `feed_grade` (instant), `feed_tph_avg`, `feed_grade_avg`, `target_tph`, `grade_min`, `grade_max`, `power_kw`, `capacity_tph` (lowered by a grid cap), `limited_by` (`none`, `feed`, `grid_cap`), `tonnes_total`, `copper_t` (copper in feed), `copper_tph`, `recovered_copper_t`.
 
 ### WasteDump (`waste-dump`)
 Features: `tonnes_total`, `tph`, `trucks_tipping`, `queue_len`.
 
 ### DispatcherController (`dispatcher`)
-Static: `strategy`, `targets_tph` (per excavator).
-Features: `decisions_total`, `last_decision`, `reroutes_total`, `ore_to_rom_total`, `trucks_<ex>` (trucks allocated to each excavator), `assigned_tph_<ex>`.
+Static: `strategy`, `targets_tph` (per excavator), `target_grade_pct`, `controls`.
+Features: `decisions_total`, `last_decision`, `reroutes_total`, `ore_to_rom_total`, `trucks_<ex>` (trucks allocated to each excavator), `assigned_tph_<ex>`, `blend_diversions_total` (ore loads sent to the ROM pad to keep the feed grade in band), `fuel_rationed_trucks`, `last_fuel_decision`.
+
+### MaintenancePlanner (`maintenance`)
+Static: `strategy`, `horizon_h`, `unplanned_factor`, `review_interval_s`, `workshop_bays`, `failure_model` (per machine class: base hazard, wear-hazard exponent, wear rate, MTTR, PM duration), `maintains`.
+Features: `decisions_total`, `last_decision` (with the numbers behind it), `expected_loss_avoided_t`, `units_broken`, `units_in_maintenance`, `units_pm_planned`, `failures_total`, `planned_total`, `fleet_health_pct`.
+
+### FuelBay (`fuel-bay`)
+Static: `capacity_l`, `spots`, `normal_resupply_lph`, `location`, `node`, `supplies`.
+Features: `stock_l`, `fill_pct`, `resupply_lph`, `consumption_lph`, `hours_of_cover` (999 = not depleting), `dispensed_total_l`, `trucks_refueling`, `queue_len`, `status` (`normal`, `supply_cut`).
+
+### PowerGrid (`power-grid`)
+Static: `demand_window_s`, `supplies`.
+Features: `site_power_kw`, `crusher_kw`, `plant_kw`, `demand_15min_kw` (last completed 15-min block average), `peak_demand_kw`, `cap_kw` (0 = none), `cap_active`, `energy_total_mwh`, `kwh_per_t`.
 
 ### ScenarioController (`scenario-controller`, live only)
 Written by the TwinVision web API (or any Ditto client); the simulator reads it. Each scenario is one feature:
@@ -132,3 +163,5 @@ Written by the TwinVision web API (or any Ditto client); the simulator reads it.
 | `excavator_breakdown` | `active`, `excavators` (e.g. `["ex-01"]`) |
 | `hardness_spike` | `active`, `factor` (1.0–2.5), `clusters` |
 | `low_grade_zone` | `active`, `factor` (0.1–1.0), `clusters` |
+| `fuel_shortage` | `active`, `resupply_lph` (0–2200), `bay_stock_l` (stock left at the fuel bay when the shortage starts) |
+| `energy_cap` | `active`, `cap_kw` (5,000–60,000; normal site load is about 34–35 MW) |
