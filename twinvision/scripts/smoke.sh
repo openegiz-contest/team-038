@@ -2,7 +2,8 @@
 #
 # End-to-end check of the TwinVision Copper Pit on a running stack:
 # twins in Ditto, simulator telemetry through MQTT -> Ditto -> Telegraf ->
-# InfluxDB for the live and the baseline copy, mass balance, dashboards.
+# InfluxDB for the live and the baseline copy, mass balance, dashboards,
+# the web UI, and a what-if scenario round trip with undo.
 #
 set -euo pipefail
 
@@ -14,6 +15,7 @@ set -a; . "$ROOT/deploy/compose/.env"; set +a
 HOST=127.0.0.1
 DITTO="http://$HOST:$DITTO_PORT"
 GRAFANA="http://$HOST:$GRAFANA_PORT"
+WEB="http://$HOST:${TWINVISION_PORT:-8095}"
 NS="org.twinvision.copper"
 EXPECTED_TWINS=75
 FAILED=0
@@ -87,6 +89,28 @@ done
 
 echo "Grafana"
 retry "TwinVision dashboard provisioned" 10 curl -sf -u "admin:$GRAFANA_ADMIN_PASSWORD" "$GRAFANA/api/dashboards/uid/twinvision-overview"
+
+echo "Web UI"
+retry "twinvision-web healthy" 20 sh -c "${COMPOSE[*]} ps --format '{{.Service}} {{.Health}}' | grep -q '^twinvision-web healthy'"
+retry "map page served at $WEB" 5 sh -c "curl -sf '$WEB/' | grep -q 'TwinVision'"
+retry "map geometry from twin attributes (/api/static)" 5 sh -c "curl -sf '$WEB/api/static' | grep -q 'blocks-north'"
+retry "live state from Ditto (/api/state)" 10 sh -c "curl -sf '$WEB/api/state' | grep -q '\"ok\":true'"
+retry "trend from InfluxDB (/api/trend)" 10 sh -c "curl -sf '$WEB/api/trend?thing=mine&feature=plant_feed_tph&minutes=5' | grep -q '\"live\":\[\['"
+
+echo "What-if round trip (crusher failure, then undo)"
+curl -sf -X POST "$WEB/api/scenarios/reset" >/dev/null || fail "reset scenarios"
+rising() {   # rising THING FEATURE DIRECTION(1|-1): value moves that way within 15 s
+  local a b
+  a=$(feature "$1" "$2"); sleep 15; b=$(feature "$1" "$2")
+  awk -v a="$a" -v b="$b" -v d="$3" 'BEGIN{exit !((b - a) * d > 0)}'
+}
+if curl -sf -X POST "$WEB/api/scenarios/crusher_failure" >/dev/null; then pass "scenario started through the web API"; else fail "POST /api/scenarios/crusher_failure"; fi
+retry "live crusher failed" 15 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/state/properties/value')\" = '\"failed\"' ]"
+retry "baseline crusher unaffected" 3 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01-baseline/features/state/properties/value')\" != '\"failed\"' ]"
+retry "live crushing KPI falls (tph_crushed)" 3 rising mine tph_crushed -1
+if curl -sf -X POST "$WEB/api/scenarios/undo" >/dev/null; then pass "undo through the web API"; else fail "POST /api/scenarios/undo"; fi
+retry "live crusher back in service" 15 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/state/properties/value')\" != '\"failed\"' ]"
+retry "live crushing KPI recovers (tph_crushed)" 4 rising mine tph_crushed 1
 
 echo
 if [ $FAILED = 0 ]; then echo "TwinVision smoke test passed."; else echo "TwinVision smoke test FAILED."; exit 1; fi

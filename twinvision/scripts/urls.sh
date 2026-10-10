@@ -9,6 +9,8 @@ cat <<TXT
 
 TwinVision Copper Pit is running.
 
+  Live mine map       http://$H:${TWINVISION_PORT:-8095}/          (what-if buttons, live vs baseline KPIs)
+  Control API         http://$H:${TWINVISION_PORT:-8095}/docs
   Grafana dashboards  http://$H:$GRAFANA_PORT/d/twinvision-overview   admin / $GRAFANA_ADMIN_PASSWORD
                       (Dashboards -> TwinVision)
   Ditto twins         http://$H:$DITTO_PORT/api/2/search/things?filter=like(thingId,%22org.twinvision.copper:*%22)

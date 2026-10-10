@@ -50,3 +50,31 @@ services:
   grafana:
     volumes:
       - ../../twinvision/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  # Live map, what-if controls and live-vs-baseline KPIs: http://localhost:8095
+  twinvision-web:
+    image: twinvision/app:local
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 192m
+    command: ["python", "-m", "uvicorn", "twinvision.web.app:app", "--host", "0.0.0.0", "--port", "8000",
+              "--no-access-log"]
+    environment:
+      DITTO_URL: http://ditto-nginx:80
+      DITTO_PASSWORD: ${DITTO_PASSWORD}
+      INFLUX_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
+      GRAFANA_PUBLIC_URL: http://${OPENEGIZ_PUBLIC_HOST:-localhost}:${GRAFANA_PORT:-3000}/d/twinvision-overview
+    ports:
+      - "${OPENEGIZ_BIND:-127.0.0.1}:${TWINVISION_PORT:-8095}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=4)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      twinvision-setup:
+        condition: service_completed_successfully
+      ditto-nginx:
+        condition: service_healthy
