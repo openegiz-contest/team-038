@@ -218,6 +218,9 @@ def overview():
            description="tonnes dug + opening stocks - (stocks + payload in trucks + waste dumped + plant feed)")
     b.pair("Fuel balance residual, L (must stay ~0)", "mine", "fuel_balance_residual_l", "none", 6, w=12,
            description="opening diesel (tanks + bay) + deliveries - (burned + written off + tanks + bay)")
+    b.pair("Energy balance residual, kWh (must stay ~0)", "mine", "energy_balance_residual_kwh", "none", 6, w=12,
+           description="grid-metered energy - (fixed loads + specific energy x tonnes crushed and milled)")
+    b.pair("Grid cap violations (load shedding events)", "power-grid", "cap_violations_total", "none", 0, w=12)
     return b.d
 
 

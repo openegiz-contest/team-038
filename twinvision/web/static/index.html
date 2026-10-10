@@ -15,6 +15,7 @@
     <span class="badge" id="conn">connecting&hellip;</span>
     <span class="badge" id="mass" title="tonnes dug + opening stocks - (stocks + in trucks + waste + plant feed)">mass balance</span>
     <span class="badge" id="fuel" title="opening diesel + deliveries - (burned + written off + tanks + bay)">fuel balance</span>
+    <span class="badge" id="energy" title="grid-metered energy - (fixed loads + specific energy x tonnes crushed and milled)">energy balance</span>
     <span class="badge" id="active">no what-if active</span>
   </div>
   <nav><a id="grafana" target="_blank" rel="noopener">Grafana</a><a href="/docs" target="_blank" rel="noopener">API</a></nav>
@@ -28,13 +29,14 @@
       <div id="scenarios"></div>
       <div class="row gap">
         <button id="undo" class="btn">&#8630; Undo last</button>
-        <button id="reset" class="btn">Reset all</button>
+        <button id="reset" class="btn" title="all scenarios off and all modules on, as one undo step">Reset all</button>
       </div>
       <div id="undoList" class="muted small"></div>
     </section>
     <section>
-      <h2>Latest decisions</h2>
-      <div id="decisions"></div>
+      <h2>Modules</h2>
+      <p class="muted small">Decision modules of the live twin. Switch one off to see its value against the baseline, which keeps every module on.</p>
+      <div id="modules"></div>
     </section>
   </aside>
 

@@ -17,5 +17,5 @@ TwinVision Copper Pit is running.
                       ditto / $DITTO_PASSWORD
   Twin hierarchy      Grafana -> OpenEgiz app -> Twins
 
-Credentials live in deploy/compose/.env. Check everything with: make twinvision-smoke
+Credentials live in deploy/compose/.env. Check everything with: ./twinvision.sh smoke   (or: make twinvision-smoke)
 TXT

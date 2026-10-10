@@ -56,6 +56,10 @@ def normalise(features):
             "resupply_lph": _num(p.get("resupply_lph"), 0.0, 0.0, P.FUEL_BAY["resupply_lph"]),
             "bay_stock_l": _num(p.get("bay_stock_l"), 8000.0, 0.0, P.FUEL_BAY["capacity_l"]),
         }
+    off = [m for m in ("dispatcher", "maintenance", "energy")
+           if _props(features, f"{m}_module").get("enabled", True) is False]
+    if off:
+        sc["modules_off"] = off
     p = _props(features, "energy_cap")
     if p.get("active"):
         sc["energy_cap"] = {"cap_kw": _num(p.get("cap_kw"), 28000.0, 5000.0, 60000.0)}

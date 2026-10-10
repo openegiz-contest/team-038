@@ -3570,6 +3570,216 @@
      "query": "from(bucket: \"default\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"mqtt_consumer\" and r._field == \"value_fuel_balance_residual_l_properties_value\")\n  |> filter(fn: (r) => r.thingId == \"org.twinvision.copper:mine\" or r.thingId == \"org.twinvision.copper:mine-baseline\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n  |> map(fn: (r) => ({_time: r._time, _value: float(v: r._value), series: if r.thingId == \"org.twinvision.copper:mine\" then \"live\" else \"baseline\"}))\n  |> group(columns: [\"series\"])"
     }
    ]
+  },
+  {
+   "id": 43,
+   "type": "timeseries",
+   "title": "Energy balance residual, kWh (must stay ~0)",
+   "description": "grid-metered energy - (fixed loads + specific energy x tonnes crushed and milled)",
+   "datasource": {
+    "type": "influxdb",
+    "uid": "opentwins-influxdb"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 102,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "decimals": 6
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "A"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "${__field.labels.series}"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*live.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1f9e89"
+        }
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 2
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*baseline.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#9a9a9a"
+        }
+       },
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          8,
+          6
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "influxdb",
+      "uid": "opentwins-influxdb"
+     },
+     "query": "from(bucket: \"default\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"mqtt_consumer\" and r._field == \"value_energy_balance_residual_kwh_properties_value\")\n  |> filter(fn: (r) => r.thingId == \"org.twinvision.copper:mine\" or r.thingId == \"org.twinvision.copper:mine-baseline\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n  |> map(fn: (r) => ({_time: r._time, _value: float(v: r._value), series: if r.thingId == \"org.twinvision.copper:mine\" then \"live\" else \"baseline\"}))\n  |> group(columns: [\"series\"])"
+    }
+   ]
+  },
+  {
+   "id": 44,
+   "type": "timeseries",
+   "title": "Grid cap violations (load shedding events)",
+   "description": "",
+   "datasource": {
+    "type": "influxdb",
+    "uid": "opentwins-influxdb"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 102,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "decimals": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "A"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "${__field.labels.series}"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*live.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1f9e89"
+        }
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 2
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*baseline.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#9a9a9a"
+        }
+       },
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          8,
+          6
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "influxdb",
+      "uid": "opentwins-influxdb"
+     },
+     "query": "from(bucket: \"default\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"mqtt_consumer\" and r._field == \"value_cap_violations_total_properties_value\")\n  |> filter(fn: (r) => r.thingId == \"org.twinvision.copper:power-grid\" or r.thingId == \"org.twinvision.copper:power-grid-baseline\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n  |> map(fn: (r) => ({_time: r._time, _value: float(v: r._value), series: if r.thingId == \"org.twinvision.copper:power-grid\" then \"live\" else \"baseline\"}))\n  |> group(columns: [\"series\"])"
+    }
+   ]
   }
  ],
  "links": [],

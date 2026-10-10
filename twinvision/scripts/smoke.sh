@@ -3,7 +3,9 @@
 # End-to-end check of the TwinVision Copper Pit on a running stack:
 # twins in Ditto, simulator telemetry through MQTT -> Ditto -> Telegraf ->
 # InfluxDB for the live and the baseline copy, mass balance, dashboards,
-# the web UI, and a what-if scenario round trip with undo.
+# mass, fuel and energy balances, the twin inventory against SCHEMA.md,
+# the web UI, a what-if round trip (KPI delta against the baseline, undo,
+# recovery) and a decision-module switch round trip.
 #
 set -euo pipefail
 
@@ -56,6 +58,11 @@ for t in mine pit crusher-01 stockpile-cos plant-feed truck-01 ex-01 road-s04 bl
 done
 retry "truck-01 is a child of the pit (_parents)" 5 sh -c \
   "curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:truck-01/attributes/_parents' | grep -q '$NS:pit'"
+if "${COMPOSE[@]}" run --rm --no-deps twinvision-setup python -m twinvision.setup.check_twins >/tmp/twinvision-twins.txt 2>&1; then
+  pass "twin types, counts, parents and relations match SCHEMA.md"
+else
+  fail "twin inventory differs from SCHEMA.md:"; grep FAIL /tmp/twinvision-twins.txt | head -10
+fi
 
 echo "Simulation"
 advancing() {   # advancing THING: its sim_time_h grows
@@ -65,9 +72,15 @@ advancing() {   # advancing THING: its sim_time_h grows
 }
 retry "live mine twin advances (sim_time_h)" 5 advancing mine
 retry "baseline mine twin advances" 5 advancing mine-baseline
+near_zero() {  # near_zero COPY FEATURE UNIT LIMIT
+  local r
+  r=$(feature "$1" "$2" || echo nan)
+  if awk -v r="$r" -v l="$4" 'BEGIN{exit !(r < l && r > -l)}'; then pass "$1 $2 = $r $3"; else fail "$1 $2: $r $3"; fi
+}
 for copy in mine mine-baseline; do
-  r=$(feature "$copy" mass_balance_residual_t || echo nan)
-  if awk -v r="$r" 'BEGIN{exit !(r < 0.001 && r > -0.001)}'; then pass "$copy mass balance residual $r t"; else fail "$copy mass balance residual: $r"; fi
+  near_zero "$copy" mass_balance_residual_t t 0.001
+  near_zero "$copy" fuel_balance_residual_l L 0.01
+  near_zero "$copy" energy_balance_residual_kwh kWh 0.01
 done
 moving() {
   local a b
@@ -99,18 +112,48 @@ retry "trend from InfluxDB (/api/trend)" 10 sh -c "curl -sf '$WEB/api/trend?thin
 
 echo "What-if round trip (crusher failure, then undo)"
 curl -sf -X POST "$WEB/api/scenarios/reset" >/dev/null || fail "reset scenarios"
+for m in dispatcher maintenance energy; do
+  curl -sf -X POST -H 'Content-Type: application/json' -d '{"enabled":true}' "$WEB/api/modules/$m" >/dev/null || fail "module $m on"
+done
 rising() {   # rising THING FEATURE DIRECTION(1|-1): value moves that way within 15 s
   local a b
   a=$(feature "$1" "$2"); sleep 15; b=$(feature "$1" "$2")
   awk -v a="$a" -v b="$b" -v d="$3" 'BEGIN{exit !((b - a) * d > 0)}'
 }
+delta() {    # delta FEATURE: live - baseline of a mine KPI
+  awk -v a="$(feature mine "$1")" -v b="$(feature mine-baseline "$1")" 'BEGIN{printf "%.1f", a - b}'
+}
+below_baseline() {   # below_baseline FEATURE MARGIN: live < baseline - MARGIN
+  awk -v d="$(delta "$1")" -v m="$2" 'BEGIN{exit !(d < -m)}'
+}
+recovering() {   # recovering FEATURE: |live - baseline| shrinks within 15 s
+  local a b
+  a=$(delta "$1"); sleep 15; b=$(delta "$1")
+  awk -v a="$a" -v b="$b" 'BEGIN{a = a < 0 ? -a : a; b = b < 0 ? -b : b; exit !(b < a || b < 50)}'
+}
 if curl -sf -X POST "$WEB/api/scenarios/crusher_failure" >/dev/null; then pass "scenario started through the web API"; else fail "POST /api/scenarios/crusher_failure"; fi
 retry "live crusher failed" 15 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/state/properties/value')\" = '\"failed\"' ]"
 retry "baseline crusher unaffected" 3 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01-baseline/features/state/properties/value')\" != '\"failed\"' ]"
 retry "live crushing KPI falls (tph_crushed)" 3 rising mine tph_crushed -1
+retry "live tph_crushed below baseline by > 500 t/h" 10 below_baseline tph_crushed 500
+echo "        delta vs baseline after the failure: $(delta tph_crushed) t/h"
 if curl -sf -X POST "$WEB/api/scenarios/undo" >/dev/null; then pass "undo through the web API"; else fail "POST /api/scenarios/undo"; fi
 retry "live crusher back in service" 15 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/state/properties/value')\" != '\"failed\"' ]"
 retry "live crushing KPI recovers (tph_crushed)" 4 rising mine tph_crushed 1
+retry "gap to baseline closes (tph_crushed)" 8 recovering tph_crushed
+echo "        delta vs baseline after undo: $(delta tph_crushed) t/h"
+
+echo "Decision module switch (maintenance off, then undo)"
+module_is() {  # module_is TWIN true|false
+  [ "$(feature "$1" module_enabled)" = "$2" ]
+}
+if curl -sf -X POST -H 'Content-Type: application/json' -d '{"enabled":false}' "$WEB/api/modules/maintenance" >/dev/null; then
+  pass "maintenance module switched off through the web API"; else fail "POST /api/modules/maintenance"; fi
+retry "live maintenance planner reports module off" 10 module_is maintenance false
+retry "baseline maintenance planner stays on" 3 module_is maintenance-baseline true
+retry "live twin lists the module as off (mine modules_off)" 5 sh -c "curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:mine/features/modules_off/properties/value' | grep -q maintenance"
+if curl -sf -X POST "$WEB/api/scenarios/undo" >/dev/null; then pass "undo through the web API"; else fail "POST /api/scenarios/undo"; fi
+retry "live maintenance planner back on" 10 module_is maintenance true
 
 echo
 if [ $FAILED = 0 ]; then echo "TwinVision smoke test passed."; else echo "TwinVision smoke test FAILED."; exit 1; fi

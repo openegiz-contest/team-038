@@ -69,6 +69,14 @@ SCENARIOS = {
 }
 
 
+# Decision modules: (scenario-controller feature, twin holding its decision log, label)
+MODULES = {
+    "dispatcher": ("dispatcher_module", "dispatcher", "Haulage and dispatch"),
+    "maintenance": ("maintenance_module", "maintenance", "Maintenance planner"),
+    "energy": ("energy_module", "power-grid", "Energy manager"),
+}
+
+
 def short(thing_id):
     return thing_id.split(":", 1)[1]
 
@@ -276,7 +284,8 @@ def static_model():
         units = {n: u for n, u in store.units.items() if not n.endswith(BASELINE)}
     return {"namespace": NS, "attributes": attrs, "units": units, "grafana": GRAFANA_URL,
             "kpis": [{"key": k[0], "label": k[1], "unit": k[4], "decimals": k[5], "better": k[6]} for k in KPIS],
-            "scenarios": {k: {"label": v["label"], "params": list(v["params"])} for k, v in SCENARIOS.items()}}
+            "scenarios": {k: {"label": v["label"], "params": list(v["params"])} for k, v in SCENARIOS.items()},
+            "modules": {k: {"label": v[2], "twin": v[1], "feature": v[0]} for k, v in MODULES.items()}}
 
 
 @app.get("/api/state")
@@ -332,15 +341,20 @@ def scenarios():
 
 @app.post("/api/scenarios/reset")
 def reset_all():
-    """Undo every active scenario (one undo step per scenario)."""
+    """Deactivate every scenario and switch every module back on, as one undo step."""
     feats = store.controller()
     changes = {}
     for name in SCENARIOS:
         props = (feats.get(name) or {}).get("properties") or {}
         if props.get("active"):
             changes[name] = {**props, "active": False}
+    modules_on = []
+    for name, (feature, _, _) in MODULES.items():
+        if ((feats.get(feature) or {}).get("properties") or {}).get("enabled") is False:
+            changes[feature] = {"enabled": True}
+            modules_on.append(name)
     store.write("Reset all", changes)
-    return {"deactivated": sorted(changes)}
+    return {"deactivated": sorted(k for k in changes if k in SCENARIOS), "modules_on": modules_on}
 
 
 @app.post("/api/scenarios/undo")
@@ -375,6 +389,19 @@ def deactivate(name: str):
     props = {**copy.deepcopy(current), "active": False}
     store.write(f"{SCENARIOS[name]['label']} off", {name: props})
     return {"scenario": name, "properties": props}
+
+
+@app.post("/api/modules/{name}")
+def set_module(name: str, body: dict = Body(...)):
+    """Switch a decision module on or off in the live twin (the baseline keeps every module on)."""
+    if name not in MODULES:
+        raise HTTPException(404, f"unknown module {name}; known: {sorted(MODULES)}")
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(422, "body must be {\"enabled\": true|false}")
+    feature, _, label = MODULES[name]
+    store.write(f"{label} {'on' if enabled else 'off'}", {feature: {"enabled": enabled}})
+    return {"module": name, "enabled": enabled}
 
 
 @app.get("/api/trend")

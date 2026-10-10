@@ -88,3 +88,25 @@ def test_reset_is_one_undo_step(store):
     a = active(store)
     assert a["crusher_failure"] and a["fuel_shortage"]
     assert store.controller()["fuel_shortage"]["properties"]["bay_stock_l"] == 5000.0
+
+
+def test_module_switch_and_undo(store):
+    web.set_module("maintenance", {"enabled": False})
+    assert store.controller()["maintenance_module"]["properties"] == {"enabled": False}
+    with pytest.raises(HTTPException):
+        web.set_module("maintenance", {"enabled": "no"})
+    with pytest.raises(HTTPException):
+        web.set_module("vision", {"enabled": True})
+    web.undo_last()
+    assert store.controller()["maintenance_module"]["properties"] == {"enabled": True}
+
+
+def test_reset_switches_modules_back_on(store):
+    web.set_module("energy", {"enabled": False})
+    web.activate("crusher_failure", {})
+    out = web.reset_all()
+    assert out == {"deactivated": ["crusher_failure"], "modules_on": ["energy"]}
+    assert store.controller()["energy_module"]["properties"] == {"enabled": True}
+    web.undo_last()
+    assert store.controller()["energy_module"]["properties"] == {"enabled": False}
+    assert store.controller()["crusher_failure"]["properties"]["active"] is True

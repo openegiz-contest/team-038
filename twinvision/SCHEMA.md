@@ -33,6 +33,28 @@ mine
 
 The baseline tree is the same under `mine-baseline`. Total: 38 live + 37 baseline = 75 twins.
 
+## Twin inventory
+
+`make twinvision-twins` reads every twin from Ditto, prints the hierarchy and checks it against this table (type, count per copy, parent) and checks that every relation attribute points to an existing twin.
+
+| Type | Live | Baseline | Parent |
+|---|---|---|---|
+| Mine | 1 | 1 | – |
+| Pit | 1 | 1 | mine |
+| BlockCluster | 3 | 3 | pit |
+| Excavator | 3 | 3 | pit |
+| HaulTruck | 8 | 8 | pit |
+| RoadSegment | 12 | 12 | pit |
+| Crusher | 1 | 1 | mine |
+| Stockpile | 2 | 2 | mine |
+| PlantFeed | 1 | 1 | mine |
+| WasteDump | 1 | 1 | mine |
+| DispatcherController | 1 | 1 | mine |
+| MaintenancePlanner | 1 | 1 | mine |
+| FuelBay | 1 | 1 | mine |
+| PowerGrid | 1 | 1 | mine |
+| ScenarioController | 1 | 0 | mine |
+
 ## Relations
 
 Material flow and physical links are attributes holding thing ids or road node names:
@@ -76,6 +98,8 @@ Static: `road_nodes` (x, y, z, label of every graph node), `facilities` (map pos
 | `mined_total_t`, `plant_feed_total_t`, `copper_in_feed_t`, `waste_total_t` | t | totals since start |
 | `mass_balance_residual_t` | t | dug + opening stocks − (stocks + in trucks + waste + plant feed); ≈ 0 |
 | `fuel_balance_residual_l` | L | opening diesel (tanks + bay) + deliveries − (burned + written off + tanks + bay); ≈ 0 |
+| `energy_balance_residual_kwh` | kWh | grid-metered energy − (crusher and concentrator fixed loads + Bond specific energy × tonnes); ≈ 0 |
+| `modules_off` | | comma-separated decision modules switched off in this copy (`none`) |
 | `trucks_queued` | trucks | trucks queued or waiting now |
 | `active_scenarios` | | comma-separated active what-ifs (`none`) |
 | `last_event` | | latest simulation event (failure, closure, maintenance decision…) |
@@ -132,18 +156,20 @@ COS features: `stock_t`, `grade`, `bwi`, `fill_pct`, `hours_of_feed`.
 ### PlantFeed (`plant-feed`)
 Static: `target_tph`, `grade_min_pct`, `grade_max_pct`, `location`.
 State enum `grade_status`: `in_spec`, `low`, `high`, `starved`.
-Features: `feed_tph`, `feed_grade` (instant), `feed_tph_avg`, `feed_grade_avg`, `target_tph`, `grade_min`, `grade_max`, `power_kw`, `capacity_tph` (lowered by a grid cap), `limited_by` (`none`, `feed`, `grid_cap`), `tonnes_total`, `copper_t` (copper in feed), `copper_tph`, `recovered_copper_t`.
+Features: `feed_tph`, `feed_grade` (instant), `feed_tph_avg`, `feed_grade_avg`, `target_tph`, `grade_min`, `grade_max`, `power_kw`, `capacity_tph` (lowered by a grid cap), `limited_by` (`none`, `feed`, `grid_cap`, `load_shed`), `tonnes_total`, `copper_t` (copper in feed), `copper_tph`, `recovered_copper_t`.
 
 ### WasteDump (`waste-dump`)
 Features: `tonnes_total`, `tph`, `trucks_tipping`, `queue_len`.
 
 ### DispatcherController (`dispatcher`)
 Static: `strategy`, `targets_tph` (per excavator), `target_grade_pct`, `controls`.
-Features: `decisions_total`, `last_decision`, `reroutes_total`, `ore_to_rom_total`, `trucks_<ex>` (trucks allocated to each excavator), `assigned_tph_<ex>`, `blend_diversions_total` (ore loads sent to the ROM pad to keep the feed grade in band), `fuel_rationed_trucks`, `last_fuel_decision`.
+Features: `decisions_total`, `last_decision`, `reroutes_total`, `ore_to_rom_total`, `trucks_<ex>` (trucks allocated to each excavator), `assigned_tph_<ex>`, `blend_diversions_total` (ore loads sent to the ROM pad to keep the feed grade in band), `fuel_rationed_trucks`, `last_fuel_decision`, `module_enabled`, `decision_log`.
+
+Every decision module twin (dispatcher, maintenance, power-grid) publishes `module_enabled` (boolean) and `decision_log`: a JSON string with its last 10 decisions, `[{"t_h": <sim hours>, "text": "..."}]`. The dispatcher logs only notable decisions: assignments that differ from the fastest shovel, re-routes, ROM diversions and fuel rationing.
 
 ### MaintenancePlanner (`maintenance`)
 Static: `strategy`, `horizon_h`, `unplanned_factor`, `review_interval_s`, `workshop_bays`, `failure_model` (per machine class: base hazard, wear-hazard exponent, wear rate, MTTR, PM duration), `maintains`.
-Features: `decisions_total`, `last_decision` (with the numbers behind it), `expected_loss_avoided_t`, `units_broken`, `units_in_maintenance`, `units_pm_planned`, `failures_total`, `planned_total`, `fleet_health_pct`.
+Features: `decisions_total`, `last_decision` (with the numbers behind it), `expected_loss_avoided_t`, `units_broken`, `units_in_maintenance`, `units_pm_planned`, `failures_total`, `planned_total`, `fleet_health_pct`, `module_enabled`, `decision_log`.
 
 ### FuelBay (`fuel-bay`)
 Static: `capacity_l`, `spots`, `normal_resupply_lph`, `location`, `node`, `supplies`.
@@ -151,7 +177,7 @@ Features: `stock_l`, `fill_pct`, `resupply_lph`, `consumption_lph`, `hours_of_co
 
 ### PowerGrid (`power-grid`)
 Static: `demand_window_s`, `supplies`.
-Features: `site_power_kw`, `crusher_kw`, `plant_kw`, `demand_15min_kw` (last completed 15-min block average), `peak_demand_kw`, `cap_kw` (0 = none), `cap_active`, `energy_total_mwh`, `kwh_per_t`.
+Features: `site_power_kw`, `crusher_kw`, `plant_kw`, `demand_15min_kw` (last completed 15-min block average), `peak_demand_kw`, `cap_kw` (0 = none), `cap_active`, `energy_total_mwh`, `kwh_per_t`, `module_enabled`, `plant_throttled` (energy module holding the concentrator below the cap), `plant_load_shed` (concentrator tripped for 15 min after a block above the cap, energy module off), `cap_violations_total`, `decisions_total`, `last_decision`, `decision_log`.
 
 ### ScenarioController (`scenario-controller`, live only)
 Written by the TwinVision web API (or any Ditto client); the simulator reads it. Each scenario is one feature:
@@ -165,3 +191,4 @@ Written by the TwinVision web API (or any Ditto client); the simulator reads it.
 | `low_grade_zone` | `active`, `factor` (0.1–1.0), `clusters` |
 | `fuel_shortage` | `active`, `resupply_lph` (0–2200), `bay_stock_l` (stock left at the fuel bay when the shortage starts) |
 | `energy_cap` | `active`, `cap_kw` (5,000–60,000; normal site load is about 34–35 MW) |
+| `dispatcher_module`, `maintenance_module`, `energy_module` | `enabled` (default `true`); `false` switches that decision module off in the live copy only |
