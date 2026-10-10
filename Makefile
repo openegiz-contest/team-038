@@ -1,4 +1,4 @@
-.PHONY: up down ps logs smoke clean example-mine example-mine-stop install uninstall status endpoints upgrade upload-build generate-data copy-build unity-demo check-secrets check-public-host
+.PHONY: up down ps logs smoke clean example-mine example-mine-stop twinvision twinvision-stop twinvision-smoke twinvision-test twinvision-urls install uninstall status endpoints upgrade upload-build generate-data copy-build unity-demo check-secrets check-public-host
 
 # ---------------------------------------------------------------------------
 # Docker Compose deployment (laptops, CI, contest judges): deploy/compose/
@@ -9,7 +9,10 @@ COMPOSE_BASE := docker compose -f deploy/compose/docker-compose.yml
 # `make clean` forgets it.
 MINE_MARKER  := deploy/compose/.example-mine
 MINE_COMPOSE := examples/mine/compose.yml
-COMPOSE := $(COMPOSE_BASE)$(if $(wildcard $(MINE_MARKER)), -f $(MINE_COMPOSE))
+# Same mechanism for the TwinVision Copper Pit (`make twinvision`).
+TV_MARKER    := deploy/compose/.twinvision
+TV_COMPOSE   := twinvision/compose.yml
+COMPOSE := $(COMPOSE_BASE)$(if $(wildcard $(MINE_MARKER)), -f $(MINE_COMPOSE))$(if $(wildcard $(TV_MARKER)), -f $(TV_COMPOSE))
 
 ## Start the whole platform with Docker Compose (first run: generates credentials)
 up:
@@ -49,10 +52,33 @@ example-mine: up
 example-mine-stop:
 	$(COMPOSE_BASE) -f $(MINE_COMPOSE) stop mine-simulator
 
+## TwinVision Copper Pit: platform + twins + live/baseline simulator + dashboards
+twinvision: up
+	$(COMPOSE_BASE)$(if $(wildcard $(MINE_MARKER)), -f $(MINE_COMPOSE)) -f $(TV_COMPOSE) up -d --build --wait --wait-timeout 600
+	@touch $(TV_MARKER)
+	@bash twinvision/scripts/urls.sh
+
+## Print the TwinVision URLs and logins again
+twinvision-urls:
+	@bash twinvision/scripts/urls.sh
+
+## Stop the TwinVision simulator (twins and data stay)
+twinvision-stop:
+	$(COMPOSE_BASE) -f $(TV_COMPOSE) stop twinvision-sim
+
+## End-to-end check of the TwinVision services on the running stack
+twinvision-smoke:
+	@bash twinvision/scripts/smoke.sh
+
+## TwinVision unit tests (mass balance, determinism, scenario propagation), in the image
+twinvision-test:
+	$(COMPOSE_BASE) -f $(TV_COMPOSE) build twinvision-setup
+	docker run --rm --user nobody -e PYTHONDONTWRITEBYTECODE=1 twinvision/app:local python -m pytest -q -p no:cacheprovider /app/twinvision/tests
+
 ## Stop the platform and DELETE all its data and credentials
 clean:
 	$(COMPOSE) down -v --remove-orphans
-	rm -f deploy/compose/.env $(MINE_MARKER)
+	rm -f deploy/compose/.env $(MINE_MARKER) $(TV_MARKER)
 
 # ---------------------------------------------------------------------------
 # Helm deployment (servers): the chart at the repository root
