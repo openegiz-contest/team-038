@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TwinVision Copper Pit</title>
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f141b; color: #e5e7eb; }
+  .s { width: 1280px; height: 720px; padding: 38px 48px; position: relative; overflow: hidden; page-break-after: always; background: #0f141b; }
+  h1 { font-size: 44px; margin: 0 0 10px; }
+  h2 { font-size: 30px; margin: 0 0 16px; color: #f59e0b; }
+  h3 { font-size: 18px; margin: 0 0 6px; color: #93c5fd; }
+  p, li { font-size: 17px; line-height: 1.45; }
+  ul { margin: 6px 0; padding-left: 22px; }
+  .muted { color: #9ca3af; }
+  .small { font-size: 14px; }
+  .tiny { font-size: 12px; }
+  .row { display: flex; gap: 22px; }
+  .col { flex: 1; min-width: 0; }
+  img.shot { width: 100%; border: 1px solid #2a3442; border-radius: 6px; display: block; }
+  .foot { position: absolute; left: 48px; right: 48px; bottom: 16px; font-size: 12px; color: #6b7280; display: flex; justify-content: space-between; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid #263040; padding: 4px 6px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #9ca3af; font-weight: 600; }
+  .good { color: #4ade80; } .bad { color: #f87171; }
+  .chain { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 18px; }
+  .chain span { background: #1b2430; border: 1px solid #2f3b4c; border-radius: 6px; padding: 6px 10px; font-size: 15px; }
+  .chain b { color: #6b7280; }
+  pre { background: #0b1016; border: 1px solid #263040; border-radius: 6px; padding: 10px 12px; font-size: 12.5px; line-height: 1.35; margin: 0; white-space: pre; overflow: hidden; }
+  .tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 9px; background: #1e3a5f; color: #bfdbfe; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<!-- 1 -->
+<section class="s">
+  <div class="row" style="align-items:center; height: 100%;">
+    <div style="flex: 0 0 420px;">
+      <h1>TwinVision<br>Copper Pit</h1>
+      <p style="font-size:21px">A digital open-pit copper mine on OpenEgiz</p>
+      <ul class="small">
+        <li>75 Eclipse Ditto twins: a live mine and a baseline copy</li>
+        <li>Live 2D map, what-if scenarios with undo, decision modules with on/off switches</li>
+        <li>Grade and hardness from the open GeoMet dataset, equipment from data sheets</li>
+        <li>Mass, diesel and energy balances checked every step</li>
+      </ul>
+      <p class="muted small">Team TwinVision · GitHub: mrl3mon<br>Contest "Digital Mine on OpenEgiz", 2026</p>
+    </div>
+    <div class="col"><img class="shot" src="img/map.jpg"></div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="s">
+  <h2>The mine: from the face to copper in concentrate</h2>
+  <div class="chain">
+    <span>3 block clusters</span><b>→</b><span>3 shovels</span><b>→</b><span>8 haul trucks on 12 road segments</span><b>→</b>
+    <span>primary crusher / ROM pad / waste dump</span><b>→</b><span>coarse ore stockpile</span><b>→</b><span>concentrator feed</span>
+  </div>
+  <div class="row">
+    <div class="col">
+      <h3>Support systems</h3>
+      <ul>
+        <li><b>Dispatcher</b>: truck allocation, ore routing, blending, fuel rationing</li>
+        <li><b>Maintenance planner</b>: wear-dependent failure risk, planned stops</li>
+        <li><b>Fuel bay</b>: diesel stock, deliveries, refuelling queue</li>
+        <li><b>Power grid</b>: crusher and concentrator demand, 15-min peak, grid cap</li>
+        <li><b>Scenario controller</b>: what-ifs and module switches</li>
+      </ul>
+      <h3 style="margin-top:14px">Two copies</h3>
+      <p>The <b>live</b> copy takes the what-ifs and switches. The <b>baseline</b> copy runs the same seed with every module on and no what-if. Each entity draws from its own random stream, so <b>live − baseline = the effect</b>.</p>
+    </div>
+    <div class="col">
+      <pre id="tree">mine                       Mine
+  crusher-01                 Crusher
+  dispatcher                 DispatcherController
+  fuel-bay                   FuelBay
+  maintenance                MaintenancePlanner
+  pit                        Pit
+    blocks-east                BlockCluster
+    blocks-north               BlockCluster
+    blocks-south               BlockCluster
+    ex-01 … ex-03              Excavator ×3
+    road-s01 … road-s12        RoadSegment ×12
+    truck-01 … truck-08        HaulTruck ×8
+  plant-feed                 PlantFeed
+  power-grid                 PowerGrid
+  scenario-controller        ScenarioController
+  stockpile-cos              Stockpile
+  stockpile-rom              Stockpile
+  waste-dump                 WasteDump
+
++ the same tree under mine-baseline (37 twins)
+  total 75 twins: all match SCHEMA.md</pre>
+      <p class="tiny muted">Output of <code>./twinvision.sh twins</code>: the hierarchy read from Ditto, checked against the inventory in SCHEMA.md.</p>
+    </div>
+  </div>
+  <div class="foot"><span>twinvision/SCHEMA.md · twinvision/sim/twins.py</span><span>2</span></div>
+</section>
+
+<!-- 3 -->
+<section class="s">
+  <h2>Built on OpenEgiz: every value goes through the platform</h2>
+  <div class="chain">
+    <span>Simulator (live + baseline, 1 s steps, 20× real time)</span><b>→</b><span>MQTT telemetry/&lt;twin&gt;</span><b>→</b>
+    <span>Eclipse Ditto (75 things)</span><b>→</b><span>MQTT opentwins/…</span><b>→</b><span>Telegraf</span><b>→</b><span>InfluxDB</span><b>→</b><span>Grafana</span>
+  </div>
+  <div class="chain">
+    <span>Map UI + control API</span><b>←</b><span>Ditto REST (state, every 1 s) and InfluxDB (trends)</span>
+    <b>·</b><span>buttons and switches</span><b>→</b><span>scenario-controller twin in Ditto</span><b>→</b><span>simulator</span>
+  </div>
+  <div class="row">
+    <div class="col">
+      <ul>
+        <li>The UI never reads simulator memory: it polls Ditto for twin state and queries InfluxDB for history.</li>
+        <li>What-if and module state live in a Ditto twin, so they survive restarts and anyone can set them with curl or a Ditto client.</li>
+        <li>Twin geometry (benches, roads, blocks, facilities) is stored in twin attributes; the map draws it from there.</li>
+        <li>One compose overlay on the platform. Start with <code>./twinvision.sh up</code>; <code>make</code> is not needed.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>Footprint (measured on the running stack)</h3>
+      <ul class="small">
+        <li>Simulator about 20 MB, map backend about 41 MB of RAM</li>
+        <li>Startup on a clean Ubuntu 24.04 host: 122 s including image pulls</li>
+        <li>Map: plain HTML/SVG, no build chain, no GPU needed</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><span>twinvision/compose.yml · twinvision/web/app.py · twinvision/sim/service.py</span><span>3</span></div>
+</section>
+
+<!-- 4 -->
+<section class="s">
+  <h2>Behaviour: physics, data and conservation</h2>
+  <div class="row">
+    <div class="col">
+      <ul class="small">
+        <li><b>Trucks</b>: Cat 793F class (226.8 t, 1,848 kW). Speed comes from the power balance on each segment's grade and rolling resistance, with retarder limits downhill. Diesel is 0.25 L/kWh plus idle burn.</li>
+        <li><b>Shovels</b>: bucket size × fill × loose density, with swing cycles and spotting.</li>
+        <li><b>Ore</b>: block grades follow the 2,000 GeoMet copper assays and Bond work indices its 60 grindability tests. The spatial pattern is synthetic.</li>
+        <li><b>Energy</b>: Bond's law gives crusher kWh/t = 0.0129·Wi and concentrator kWh/t = 0.79·Wi, plus a 2.5 MW base load. Crusher capacity is limited by its 750 kW motor at the current hardness.</li>
+        <li><b>Recovery</b>: 87.9 %, the mean of the 53 GeoMet flotation tests.</li>
+        <li><b>Failures</b>: hazard λ0·exp(k(1 − health/100)), drawn from each machine's own random stream.</li>
+        <li><b>Queues</b>: shovels, crusher pocket, ROM and dump tip spots, fuel bay and workshop bays; roads have capacity limits.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <img class="shot" src="img/crusher.jpg" style="height:270px;width:auto"><p class="tiny muted">The header shows the three balance residuals live, here during a crusher failure.</p>
+      <p class="small">Every step: <b>mass</b> (dug + opening stocks − stocks, loads, waste, plant feed), <b>diesel</b> (opening + deliveries − burned, written off, tanks, bay) and <b>energy</b> (grid meter − fixed loads − Bond energy × tonnes). Both copies publish the residuals; the header shows them live.</p>
+      <p class="small">46 unit tests: every residual below 0.000001 at every step, determinism, propagation of every scenario, each module on vs off.</p>
+    </div>
+  </div>
+  <div class="foot"><span>twinvision/DATA_ASSUMPTIONS.md · DATA_LICENSES.md (GeoMet, CC BY 4.0)</span><span>4</span></div>
+</section>
+
+<!-- 5 -->
+<section class="s">
+  <h2>Live mine map: http://localhost:8095/</h2>
+  <img class="shot" src="img/map_full.jpg" style="height: 560px; width: auto; margin: 0 auto;">
+  <p class="small muted" style="margin-top:8px">The map refreshes every second from Ditto. Left: what-if scenarios and modules. Centre: the pit and plant, with trucks coloured by state and load-grade dots, blocks coloured by grade, and gauges with baseline markers. Right: live vs baseline KPIs, an InfluxDB trend and the event log.</p>
+  <div class="foot"><span>twinvision/web/static</span><span>5</span></div>
+</section>
+
+<!-- 6 -->
+<section class="s">
+  <h2>What-if: crusher failure</h2>
+  <div class="row">
+    <div class="col" style="flex: 0 0 820px;"><img class="shot" src="img/crusher.jpg"></div>
+    <div class="col">
+      <ul class="small">
+        <li>One click (or <code>POST /api/scenarios/crusher_failure</code>) writes the scenario-controller twin.</li>
+        <li>The live crusher stops (red ring). The dispatcher sends ore to the ROM pad, the coarse ore stockpile drains, and plant feed and copper fall.</li>
+        <li>The baseline keeps running; the KPI table shows the gap.</li>
+        <li>The smoke test runs this round trip. In one run live crushing fell 584 t/h below the baseline.</li>
+        <li><b>Undo</b> restores the previous state, and the gap closes as the crusher catches up.</li>
+        <li><b>Resync live = baseline</b> copies the baseline state into the live copy, so the next what-if starts from identical mines.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><span>twinvision/scripts/smoke.sh</span><span>6</span></div>
+</section>
+
+<!-- 7 -->
+<section class="s">
+  <h2>Seven scenarios, all run from the UI or curl, all undoable</h2>
+  <div class="row">
+    <div class="col"><img class="shot" src="img/road.jpg" style="height:250px;width:auto"><p class="tiny muted">Road closure s04: the closed ramp is drawn red and trucks re-route.</p></div>
+    <div class="col"><img class="shot" src="img/fuel.jpg" style="height:250px;width:auto"><p class="tiny muted">Fuel shortage: the dispatcher parks trucks, waste first.</p></div>
+  </div>
+  <table style="margin-top:6px">
+    <tr><th>Scenario</th><th style="text-align:left">Parameters</th><th style="text-align:left">Effect vs baseline, as it appears on the stand</th></tr>
+    <tr><td>Crusher failure</td><td style="text-align:left">–</td><td style="text-align:left">ore to the ROM pad, coarse ore stockpile drains, plant feed and copper fall</td></tr>
+    <tr><td>Road closure</td><td style="text-align:left">segment</td><td style="text-align:left">re-routing; mined t/h down, diesel L/t up</td></tr>
+    <tr><td>Excavator breakdown</td><td style="text-align:left">shovel</td><td style="text-align:left">trucks re-assigned; queue time up, feed grade down</td></tr>
+    <tr><td>Hardness spike</td><td style="text-align:left">factor, zone</td><td style="text-align:left">slower digging and crushing; kWh/t up</td></tr>
+    <tr><td>Low-grade zone</td><td style="text-align:left">factor, zone</td><td style="text-align:left">feed grade and copper down; the dispatcher re-blends</td></tr>
+    <tr><td>Fuel shortage</td><td style="text-align:left">resupply, stock</td><td style="text-align:left">trucks rationed; mining drops, the plant runs on stockpiles</td></tr>
+    <tr><td>Energy cap</td><td style="text-align:left">cap kW</td><td style="text-align:left">concentrator throttled to the cap; plant feed down</td></tr>
+  </table>
+  <div class="foot"><span>README → What-if scenarios</span><span>7</span></div>
+</section>
+
+<!-- 8 -->
+<section class="s">
+  <h2>Decision modules: logged decisions, on/off switch</h2>
+  <div class="row">
+    <div class="col" style="flex: 0 0 360px;"><img class="shot" src="img/modules.jpg" style="height:565px;width:auto"></div>
+    <div class="col">
+      <ul class="small">
+        <li><b>Haulage and dispatch</b>: each empty truck goes to the shovel with the earliest expected loading start, corrected for the target-rate deficit and the feed grade. Ore goes to the ROM pad when the crusher is down or the grade is off band. Re-routing and fuel rationing are included. <span class="muted">Off: fixed 2/2/4 allocation, all ore to the crusher.</span></li>
+        <li><b>Maintenance planner</b>: plans a stop when P(fail in 8 h) × MTTR × loss × 1.3 > PM time × loss, and builds coarse ore stock before crusher maintenance. <span class="muted">Off: run to failure.</span></li>
+        <li><b>Energy manager</b>: under a grid cap it throttles the concentrator to stay below the cap. <span class="muted">Off: a 15-min block over the cap trips the plant for 15 min.</span></li>
+      </ul>
+      <p class="small">Each decision is published to the module's twin (<code>decision_log</code>) with its reason. A switch writes the scenario-controller twin and affects the live copy only, so the KPI deltas show what the module is worth.</p>
+      <img class="shot" src="img/energy_off.jpg" style="margin-top:6px;height:250px;width:auto">
+    </div>
+  </div>
+  <div class="foot"><span>twinvision/sim/engine.py: Dispatcher, MaintenancePlanner, EnergyManager</span><span>8</span></div>
+</section>
+
+<!-- 9 -->
+<section class="s">
+  <h2>What each case changes over one simulated day</h2>
+  <p class="small muted" style="margin-top:-8px">Output of <code>./twinvision.sh compare --hours 24</code>: the same simulator code run headless, seed 42, 2 h warm-up, then 24 h with the case applied to the live copy. Cells show live / baseline.</p>
+  <table>
+<tr><th>Case</th><th>Plant feed t</th><th>Grade % Cu</th><th>Copper t</th><th>Mined t</th><th>Queue min</th><th>Avail. %</th><th>kWh/t</th><th>Diesel L/t</th><th>Failures</th></tr>
+<tr><td>crusher failure</td><td>3,613 / 47,666</td><td>0.715 / 0.634</td><td>22.7 / 265.4</td><td>174,888 / 173,136</td><td>0.47 / 0.85</td><td>87.6 / 95.0</td><td>32.05 / 17.47</td><td>0.204 / 0.215</td><td>2 / 2</td></tr>
+<tr><td>road closure s04</td><td>47,369 / 47,666</td><td>0.623 / 0.634</td><td>259.3 / 265.4</td><td>161,870 / 173,136</td><td>0.65 / 0.85</td><td>94.4 / 95.0</td><td>17.30 / 17.47</td><td>0.235 / 0.215</td><td>2 / 2</td></tr>
+<tr><td>excavator breakdown ex-01</td><td>33,542 / 47,666</td><td>0.542 / 0.634</td><td>159.8 / 265.4</td><td>145,363 / 173,136</td><td>4.99 / 0.85</td><td>87.5 / 95.0</td><td>17.62 / 17.47</td><td>0.200 / 0.215</td><td>1 / 2</td></tr>
+<tr><td>hardness spike x1.4 north</td><td>44,146 / 47,666</td><td>0.637 / 0.634</td><td>247.1 / 265.4</td><td>171,736 / 173,136</td><td>0.80 / 0.85</td><td>95.1 / 95.0</td><td>21.41 / 17.47</td><td>0.211 / 0.215</td><td>2 / 2</td></tr>
+<tr><td>low-grade zone x0.6 north</td><td>34,473 / 47,666</td><td>0.537 / 0.634</td><td>162.9 / 265.4</td><td>164,609 / 173,136</td><td>2.10 / 0.85</td><td>95.3 / 95.0</td><td>17.64 / 17.47</td><td>0.213 / 0.215</td><td>1 / 2</td></tr>
+<tr><td>fuel shortage</td><td>32,977 / 47,666</td><td>0.647 / 0.634</td><td>187.5 / 265.4</td><td>38,944 / 173,136</td><td>0.07 / 0.85</td><td>97.6 / 95.0</td><td>17.82 / 17.47</td><td>0.313 / 0.215</td><td>0 / 2</td></tr>
+<tr><td>grid cap 28 MW</td><td>37,590 / 47,666</td><td>0.649 / 0.634</td><td>214.3 / 265.4</td><td>172,462 / 173,136</td><td>0.79 / 0.85</td><td>94.7 / 95.0</td><td>17.88 / 17.47</td><td>0.209 / 0.215</td><td>2 / 2</td></tr>
+<tr><td>dispatcher off</td><td>47,700 / 47,666</td><td>0.581 / 0.634</td><td>243.8 / 265.4</td><td>168,888 / 173,136</td><td>1.74 / 0.85</td><td>95.3 / 95.0</td><td>17.12 / 17.47</td><td>0.199 / 0.215</td><td>1 / 2</td></tr>
+<tr><td>maintenance off</td><td>36,499 / 47,666</td><td>0.657 / 0.634</td><td>210.9 / 265.4</td><td>174,020 / 173,136</td><td>1.11 / 0.85</td><td>94.8 / 95.0</td><td>17.89 / 17.47</td><td>0.208 / 0.215</td><td>4 / 2</td></tr>
+<tr><td>grid cap 28 MW, energy module off (48 load-shed events)</td><td>24,027 / 47,666</td><td>0.666 / 0.634</td><td>140.7 / 265.4</td><td>172,828 / 173,136</td><td>0.66 / 0.85</td><td>94.7 / 95.0</td><td>17.56 / 17.47</td><td>0.205 / 0.215</td><td>2 / 2</td></tr>
+</table>
+  <p class="small"><b>Module value:</b> under the same 28 MW cap the energy manager keeps <span class="good">214 t</span> of copper against <span class="bad">141 t</span> with load shedding. The dispatcher adds <span class="good">22 t of copper per day</span> and halves queue time. The maintenance planner prevents a crusher breakdown and saves <span class="good">11,000 t</span> of plant feed.</p>
+  <div class="foot"><span>twinvision/sim/compare.py</span><span>9</span></div>
+</section>
+
+<!-- 10 -->
+<section class="s">
+  <h2>Grafana: live vs baseline from InfluxDB</h2>
+  <img class="shot" src="img/grafana.jpg" style="height: 560px; width: auto; margin: 0 auto;">
+  <p class="small muted" style="margin-top:8px">Provisioned dashboard "TwinVision Copper Pit – live vs baseline" (http://localhost:3000/d/twinvision-overview). It pairs a live and a baseline series for every KPI and shows stockpiles, energy, diesel, balance residuals and maintenance.</p>
+  <div class="foot"><span>twinvision/grafana/build_dashboards.py</span><span>10</span></div>
+</section>
+
+<!-- 11 -->
+<section class="s">
+  <h2>Verified end to end</h2>
+  <div class="row">
+    <div class="col"><pre style="font-size:8.4px;line-height:1.13">Containers
+  ok    twinvision-setup created the twins
+  ok    twinvision-sim healthy
+Twins in Ditto
+  ok    75 twins (live + baseline) indexed
+  ok    twin mine, pit, crusher-01, ... exist (14 key twins)
+  ok    truck-01 is a child of the pit (_parents)
+  ok    twin types, counts, parents and relations match SCHEMA.md
+Simulation
+  ok    live mine twin advances (sim_time_h)
+  ok    baseline mine twin advances
+  ok    mine mass_balance_residual_t = 0.0 t
+  ok    mine fuel_balance_residual_l = 0.0 L
+  ok    mine energy_balance_residual_kwh = 0.0 kWh
+  ok    mine-baseline mass_balance_residual_t = 0.0 t
+  ok    mine-baseline fuel_balance_residual_l = 0.0 L
+  ok    mine-baseline energy_balance_residual_kwh = 0.0 kWh
+  ok    trucks move (x changes)
+Telemetry in InfluxDB
+  ok    points for mine in the last 2 min
+  ok    points for mine-baseline in the last 2 min
+  ok    points for truck-03 in the last 2 min
+  ok    points for crusher-01 in the last 2 min
+Grafana
+  ok    TwinVision dashboard provisioned
+Web UI
+  ok    twinvision-web healthy
+  ok    map page served at http://127.0.0.1:8095
+  ok    map geometry from twin attributes (/api/static)
+  ok    live state from Ditto (/api/state)
+  ok    trend from InfluxDB (/api/trend)
+What-if round trip (crusher failure, then undo)
+  ok    scenario started through the web API
+  ok    live crusher failed
+  ok    baseline crusher unaffected
+  ok    live crusher throughput 0 t/h
+  ok    live tph_crushed below baseline by &gt; 500 t/h
+        delta vs baseline after the failure: -584.2 t/h
+  ok    undo through the web API
+  ok    live crusher back in service
+  ok    live crushing KPI recovers (tph_crushed)
+  ok    gap to baseline closes (tph_crushed)
+        delta vs baseline after undo: -531.0 t/h
+Decision module switch (maintenance off, then undo)
+  ok    maintenance module switched off through the web API
+  ok    live maintenance planner reports module off
+  ok    baseline maintenance planner stays on
+  ok    live twin lists the module as off (mine modules_off)
+  ok    undo through the web API
+  ok    live maintenance planner back on
+Resync live to baseline
+  ok    resync requested through the web API
+  ok    live and baseline report identical totals (mined_total_t)
+TwinVision smoke test passed.</pre></div>
+    <div class="col">
+      <h3>Run it</h3>
+      <pre>git clone https://github.com/openegiz-contest/team-038.git
+cd team-038
+./twinvision.sh up        # platform + TwinVision
+./twinvision.sh smoke     # end-to-end check
+./twinvision.sh test      # 46 unit tests in the image</pre>
+      <ul class="small">
+        <li>A clean Ubuntu 24.04 host (Docker 29.1, Compose 2.40, no <code>make</code>) needs no manual steps: 122 s to start, then all checks pass.</li>
+        <li>The platform's own <code>make smoke</code> also passes.</li>
+      </ul>
+      <h3 style="margin-top:12px">Limitations</h3>
+      <ul class="small">
+        <li>2D map only; there is no Unity scene and no vision module.</li>
+        <li>The concentrator is a feed sink with Bond energy and constant recovery.</li>
+        <li>The site is fictional. Only the grade, hardness and recovery distributions come from real data.</li>
+        <li>The simulator restarts from t = 0 with its container; scenario state persists in Ditto.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><span>SUBMISSION.md · README.md</span><span>11</span></div>
+</section>
+
+</body>
+</html>
