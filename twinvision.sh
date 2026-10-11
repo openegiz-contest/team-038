@@ -9,6 +9,7 @@
 #   ./twinvision.sh test      unit tests in the image (make twinvision-test)
 #   ./twinvision.sh twins     list twins from Ditto, check against SCHEMA.md (make twinvision-twins)
 #   ./twinvision.sh urls      print URLs and logins (make twinvision-urls)
+#   ./twinvision.sh compare [--hours 24]   headless live vs baseline table of every scenario and module
 #   ./twinvision.sh ps | logs [service] | stop | down | clean
 #
 set -euo pipefail
@@ -48,6 +49,9 @@ case "${1:-up}" in
   twins)
     "${BASE[@]}" "${TV[@]}" run --rm --no-deps twinvision-setup python -m twinvision.setup.check_twins ;;
   urls) bash twinvision/scripts/urls.sh ;;
+  compare)
+    "${BASE[@]}" "${TV[@]}" build twinvision-setup >/dev/null
+    docker run --rm --user nobody twinvision/app:local python -m twinvision.sim.compare "${@:2}" ;;
   ps) "${ALL[@]}" ps -a ;;
   logs) "${ALL[@]}" logs -f --tail=100 "${@:2}" ;;
   stop) "${BASE[@]}" "${TV[@]}" stop twinvision-sim ;;
@@ -56,5 +60,5 @@ case "${1:-up}" in
   clean)
     "${ALL[@]}" down -v --remove-orphans
     rm -f deploy/compose/.env deploy/compose/.example-mine deploy/compose/.twinvision ;;
-  *) sed -n '3,12p' "$0"; exit 2 ;;
+  *) sed -n '3,13p' "$0"; exit 2 ;;
 esac

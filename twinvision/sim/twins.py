@@ -150,6 +150,7 @@ def scenario_defaults():
         "dispatcher_module": {"properties": {"enabled": True}},
         "maintenance_module": {"properties": {"enabled": True}},
         "energy_module": {"properties": {"enabled": True}},
+        "resync": {"properties": {"seq": 0}},
     }
 
 
@@ -378,6 +379,8 @@ def snapshot(sim):
         "dispensed_total_l": f(r(sim.fuel_dispensed, 1), "L"),
         "trucks_refueling": f(len(sim.fuel_bay.active), "trucks"),
         "queue_len": f(len(sim.fuel_bay.queue), "trucks"),
+        "trucks_out_of_fuel": f(len(sim.fuel_bay.queue) if sim.bay_out() else 0, "trucks"),
+        "starved_truck_hours": f(r(sim.fuel_starved_h, 2), "h"),
         "status": f("supply_cut" if sim.scenarios.get("fuel_shortage") else "normal"),
     }
     cap = sim.energy_cap_kw()

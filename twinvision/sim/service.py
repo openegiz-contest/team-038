@@ -104,6 +104,7 @@ def main():
              args.interval, ", ".join(s.suffix or "live" for s in sims))
     tick = 0
     last_sync = 0.0
+    resync_seq = None
     next_t = time.monotonic()
     while not stop:
         if ditto and (dirty.is_set() or time.monotonic() - last_sync > 30):
@@ -111,6 +112,12 @@ def main():
             try:
                 feats = ditto.request("GET", f"/api/2/things/{SCENARIO_THING}/features", timeout=10)[1]
                 sc = normalise(feats)
+                seq = ((feats.get("resync") or {}).get("properties") or {}).get("seq")
+                if resync_seq is not None and seq != resync_seq and len(sims) > 1:
+                    live.resync_from(sims[1])
+                    live.log("Live copy resynchronised to the baseline")
+                    log.info("live copy resynchronised to the baseline (request %s)", seq)
+                resync_seq = seq
                 if sc != live.scenarios:
                     log.info("scenarios: %s", json.dumps(sc) if sc else "none")
                 live.set_scenarios(sc)

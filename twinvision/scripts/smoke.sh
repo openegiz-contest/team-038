@@ -5,7 +5,8 @@
 # InfluxDB for the live and the baseline copy, mass balance, dashboards,
 # mass, fuel and energy balances, the twin inventory against SCHEMA.md,
 # the web UI, a what-if round trip (KPI delta against the baseline, undo,
-# recovery) and a decision-module switch round trip.
+# recovery), a decision-module switch round trip and a resync of the live
+# copy to the baseline.
 #
 set -euo pipefail
 
@@ -134,7 +135,7 @@ recovering() {   # recovering FEATURE: |live - baseline| shrinks within 15 s
 if curl -sf -X POST "$WEB/api/scenarios/crusher_failure" >/dev/null; then pass "scenario started through the web API"; else fail "POST /api/scenarios/crusher_failure"; fi
 retry "live crusher failed" 15 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/state/properties/value')\" = '\"failed\"' ]"
 retry "baseline crusher unaffected" 3 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01-baseline/features/state/properties/value')\" != '\"failed\"' ]"
-retry "live crushing KPI falls (tph_crushed)" 3 rising mine tph_crushed -1
+retry "live crusher throughput 0 t/h" 10 sh -c "[ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/throughput_tph/properties/value')\" = 0.0 ] || [ \"\$(curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:crusher-01/features/throughput_tph/properties/value')\" = 0 ]"
 retry "live tph_crushed below baseline by > 500 t/h" 10 below_baseline tph_crushed 500
 echo "        delta vs baseline after the failure: $(delta tph_crushed) t/h"
 if curl -sf -X POST "$WEB/api/scenarios/undo" >/dev/null; then pass "undo through the web API"; else fail "POST /api/scenarios/undo"; fi
@@ -154,6 +155,13 @@ retry "baseline maintenance planner stays on" 3 module_is maintenance-baseline t
 retry "live twin lists the module as off (mine modules_off)" 5 sh -c "curl -sf -u ditto:$DITTO_PASSWORD '$DITTO/api/2/things/$NS:mine/features/modules_off/properties/value' | grep -q maintenance"
 if curl -sf -X POST "$WEB/api/scenarios/undo" >/dev/null; then pass "undo through the web API"; else fail "POST /api/scenarios/undo"; fi
 retry "live maintenance planner back on" 10 module_is maintenance true
+
+echo "Resync live to baseline"
+same_totals() {
+  [ "$(feature mine mined_total_t)" = "$(feature mine-baseline mined_total_t)" ]
+}
+if curl -sf -X POST "$WEB/api/resync" >/dev/null; then pass "resync requested through the web API"; else fail "POST /api/resync"; fi
+retry "live and baseline report identical totals (mined_total_t)" 10 same_totals
 
 echo
 if [ $FAILED = 0 ]; then echo "TwinVision smoke test passed."; else echo "TwinVision smoke test FAILED."; exit 1; fi

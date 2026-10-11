@@ -48,6 +48,7 @@ Check that everything works end to end (about 2 minutes, 1 minute and 1 minute):
 ./twinvision.sh test             # make twinvision-test: unit tests in the image (balances, determinism,
                                  #   scenario propagation, decisions, module switches, web API)
 ./twinvision.sh twins            # make twinvision-twins: print the twin hierarchy from Ditto, check it against SCHEMA.md
+./twinvision.sh compare --hours 24   # headless: live vs baseline totals for every scenario and module switch
 ```
 
 ## What to open
@@ -97,7 +98,10 @@ curl -X POST localhost:8095/api/scenarios/energy_cap          -H 'Content-Type: 
 curl -X DELETE localhost:8095/api/scenarios/crusher_failure   # undo one scenario
 curl -X POST localhost:8095/api/scenarios/undo                # undo the last action
 curl -X POST localhost:8095/api/scenarios/reset               # all scenarios off, all modules on (one undo step)
+curl -X POST localhost:8095/api/resync                        # copy the baseline state into the live copy (not undoable)
 ```
+
+After a scenario is undone, the live mine keeps its history (stockpile levels, truck positions, machine wear), so it does not return exactly to the baseline. **Resync live = baseline** copies the baseline state into the live copy, so the next comparison starts from two identical mines.
 
 The scenario state lives in the `org.twinvision.copper:scenario-controller` twin, so it can also be changed with any Ditto client. KPIs are 30-minute moving averages in simulated time, which is about 90 s of real time at the default speed.
 
@@ -125,6 +129,7 @@ curl -X POST localhost:8095/api/scenarios/undo      # module switches share the 
 | `smoke` | `twinvision-smoke` | End-to-end check of the TwinVision services |
 | `test` | `twinvision-test` | Unit tests inside the image |
 | `twins` | `twinvision-twins` | Twin hierarchy from Ditto, checked against `twinvision/SCHEMA.md` |
+| `compare [--hours N]` | – | Headless live vs baseline table of every scenario and module switch (same simulator code, seed 42) |
 | `stop` | `twinvision-stop` | Stop the simulator (twins and data stay) |
 | `down` / `start` | `down` / `up` | Stop / start everything, keeping data |
 | `ps`, `logs <service>` | `ps`, `logs S=<service>` | Container status, logs |

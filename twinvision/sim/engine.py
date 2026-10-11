@@ -17,6 +17,7 @@ planned maintenance), diesel supply at the fuel bay, electrical demand and
 the grid cap.
 """
 
+import copy
 import math
 import random
 from collections import deque
@@ -35,17 +36,28 @@ def record(log, t, text):
 
 
 class Ema:
-    """Exponentially weighted rate: add() amounts, read .v as amount per hour."""
+    """Exponentially weighted rate: add() amounts, read .v as amount per hour.
+
+    Bias-corrected for the start-up (divided by the weight accumulated so far),
+    so the rate is right after a few minutes instead of ramping up over tau.
+    The weight is floored at 0.25 to keep the first minutes from jumping with
+    every single truck load."""
 
     def __init__(self, tau):
         self.tau = tau
-        self.v = 0.0
+        self.raw = 0.0
+        self.w = 0.0
 
     def add(self, amount):
-        self.v += amount * 3600.0 / self.tau
+        self.raw += amount * 3600.0 / self.tau
 
     def decay(self, factor):
-        self.v *= factor
+        self.raw *= factor
+        self.w = self.w * factor + (1.0 - factor)
+
+    @property
+    def v(self):
+        return self.raw / max(self.w, 0.25)
 
 
 class Level:
@@ -318,6 +330,7 @@ class MineSim:
         self.fuel_dispensed = 0.0
         self.fuel_resupplied = 0.0
         self.fuel_written_off = 0.0
+        self.fuel_starved_h = 0.0
         self.loader_fuel = 0.0
         self.fuel_initial = sum(t.fuel for t in self.trucks) + self.bay_l
         # electricity
@@ -335,6 +348,7 @@ class MineSim:
         self.plant_bond_kwh = 0.0
         self.plant_kwh = 0.0
         self.modules = {m: True for m in MODULES}
+        self.cap_since = 0.0
         self.dispatcher = Dispatcher(self)
         self.maintenance = MaintenancePlanner(self)
         self.energy = EnergyManager(self)
@@ -428,7 +442,16 @@ class MineSim:
                         u.health.pm_pending = False
         ec, oec = sc.get("energy_cap"), old.get("energy_cap")
         if ec != oec:
+            self.cap_since = self.t
             self.log(f"Grid cap {ec['cap_kw']:,.0f} kW (peak tariff window)" if ec else "Grid cap lifted")
+
+    def resync_from(self, other):
+        """Make this copy an exact copy of `other` (state, queues, wear, random streams); keep the name."""
+        suffix = self.suffix
+        self.__dict__.update(copy.deepcopy(other).__dict__)
+        for part in (self.dispatcher, self.maintenance, self.energy):
+            part.sim = self
+        self.suffix = suffix
 
     # ------------------------------------------------------------------ step
     def step(self, dt):
@@ -547,8 +570,11 @@ class MineSim:
         if st in ("queued", "loading", "tipping", "waiting"):
             self.burn(tr, P.TRUCK["idle_kw"], dt)
         if st in ("queued", "waiting"):
-            tr.wait_cycle += dt
-            self.k["queue_s"].add(dt)
+            if tr in self.fuel_bay.queue and self.bay_out():
+                self.fuel_starved_h += dt / 3600.0      # stock-out, not haul congestion
+            else:
+                tr.wait_cycle += dt
+                self.k["queue_s"].add(dt)
         if st == "waiting" and self.t >= tr.retry_at:
             tr.retry_at = self.t + 60.0
             if tr.payload > 0:
@@ -838,7 +864,7 @@ class MineSim:
             self.demand_kw = self.win_kwh * 3600.0 / self.win_s
             self.peak_kw = max(self.peak_kw, self.demand_kw)
             self.win_kwh = self.win_s = 0.0
-            self.energy.window_closed(self.demand_kw)
+            self.energy.window_closed(self.demand_kw, self.t - P.GRID["demand_window_s"])
 
     def step_kpis(self, dt):
         f = math.exp(-dt / P.KPI_TAU_S)
@@ -854,6 +880,9 @@ class MineSim:
         self.avail.update(up / units, dt)
 
     # ------------------------------------------------------------------ audits
+    def bay_out(self):
+        return self.bay_l < P.FUEL_BAY["min_dispense_l"]
+
     def mass_balance(self):
         """Tonnes dug + opening stocks - (stocks now + in trucks + waste dumped + plant feed)."""
         dug = sum(ex.tonnes for ex in self.excavators)
@@ -1339,10 +1368,11 @@ class EnergyManager:
                 self.decide("Concentrator throttle released")
         return lim
 
-    def window_closed(self, demand_kw):
+    def window_closed(self, demand_kw, window_start):
+        """A demand block counts against the cap only if the cap was already set when it began."""
         sim = self.sim
         cap = sim.energy_cap_kw()
-        if cap < math.inf and demand_kw > cap + 1.0 and not self.tripped():
+        if cap < math.inf and window_start >= sim.cap_since - 1e-6 and demand_kw > cap + 1.0 and not self.tripped():
             self.violations += 1
             self.trip_until = sim.t + self.TRIP_S
             text = (f"Grid cap exceeded: 15-min demand {demand_kw:,.0f} kW > cap {cap:,.0f} kW; "

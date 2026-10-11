@@ -644,7 +644,8 @@ function scenarioPanel() {
       box.appendChild(card);
     }
     $("#undo").addEventListener("click", () => call("POST", "/api/scenarios/undo", null, "Last change undone"));
-    $("#reset").addEventListener("click", () => call("POST", "/api/scenarios/reset", null, "All scenarios reset"));
+    $("#reset").addEventListener("click", () => call("POST", "/api/scenarios/reset", null, "All scenarios off, all modules on"));
+    $("#resync").addEventListener("click", () => call("POST", "/api/resync", null, "Live copy resynchronised to the baseline"));
   }
   for (const [name, meta] of Object.entries(STATIC.scenarios)) {
     const card = $(`#scn-${name}`), p = S.scenarios?.[name] || {};

@@ -173,7 +173,7 @@ Features: `decisions_total`, `last_decision` (with the numbers behind it), `expe
 
 ### FuelBay (`fuel-bay`)
 Static: `capacity_l`, `spots`, `normal_resupply_lph`, `location`, `node`, `supplies`.
-Features: `stock_l`, `fill_pct`, `resupply_lph`, `consumption_lph`, `hours_of_cover` (999 = not depleting), `dispensed_total_l`, `trucks_refueling`, `queue_len`, `status` (`normal`, `supply_cut`).
+Features: `stock_l`, `fill_pct`, `resupply_lph`, `consumption_lph`, `hours_of_cover` (999 = not depleting), `dispensed_total_l`, `trucks_refueling`, `queue_len`, `trucks_out_of_fuel` (trucks waiting at an empty bay), `starved_truck_hours` (their waiting time; not counted in the queue-time KPI, which measures haul congestion), `status` (`normal`, `supply_cut`).
 
 ### PowerGrid (`power-grid`)
 Static: `demand_window_s`, `supplies`.
@@ -192,3 +192,4 @@ Written by the TwinVision web API (or any Ditto client); the simulator reads it.
 | `fuel_shortage` | `active`, `resupply_lph` (0–2200), `bay_stock_l` (stock left at the fuel bay when the shortage starts) |
 | `energy_cap` | `active`, `cap_kw` (5,000–60,000; normal site load is about 34–35 MW) |
 | `dispatcher_module`, `maintenance_module`, `energy_module` | `enabled` (default `true`); `false` switches that decision module off in the live copy only |
+| `resync` | `seq`; each change makes the simulator copy the baseline state into the live copy |

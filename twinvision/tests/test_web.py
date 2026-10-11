@@ -110,3 +110,11 @@ def test_reset_switches_modules_back_on(store):
     web.undo_last()
     assert store.controller()["energy_module"]["properties"] == {"enabled": False}
     assert store.controller()["crusher_failure"]["properties"]["active"] is True
+
+
+def test_resync_bumps_sequence_without_undo_entry(store):
+    before = len(store.history)
+    assert web.resync() == {"resync": 1}
+    assert web.resync() == {"resync": 2}
+    assert store.controller()["resync"]["properties"] == {"seq": 2}
+    assert len(store.history) == before

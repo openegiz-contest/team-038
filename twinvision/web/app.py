@@ -391,6 +391,17 @@ def deactivate(name: str):
     return {"scenario": name, "properties": props}
 
 
+@app.post("/api/resync")
+def resync():
+    """Copy the baseline state into the live copy (stockpiles, positions, wear, random streams).
+
+    Active scenarios and module switches stay as they are and act on the copied state.
+    A state copy cannot be undone, so it is not put on the undo stack."""
+    seq = ((store.controller().get("resync") or {}).get("properties") or {}).get("seq") or 0
+    store.write("Resync live to baseline", {"resync": {"seq": int(seq) + 1}}, record=False)
+    return {"resync": int(seq) + 1}
+
+
 @app.post("/api/modules/{name}")
 def set_module(name: str, body: dict = Body(...)):
     """Switch a decision module on or off in the live twin (the baseline keeps every module on)."""

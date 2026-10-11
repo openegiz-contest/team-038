@@ -315,3 +315,32 @@ def test_feature_types_are_stable(name):
             t = type(props["value"]).__name__
             t = "number" if t in ("int", "float") else t
             assert types.setdefault(feat, t) == t, feat
+
+
+def test_fuel_stockout_is_not_counted_as_haul_queue():
+    live, base = paired({"fuel_shortage": {"resupply_lph": 0.0, "bay_stock_l": 8000.0}}, 2, 18)
+    assert live.bay_out() and live.fuel_starved_h > 1.0
+    assert live.kpis()["mean_queue_min"] < 10.0
+    assert abs(live.fuel_balance()) < 1e-6
+
+
+def test_cap_applies_to_demand_blocks_started_after_it():
+    for start in (7200 + 300, 7200 + 600):          # cap set in the middle of a 15-min block
+        live = MineSim(42)
+        while live.t < start:
+            live.step(1.0)
+        live.set_scenarios({"energy_cap": {"cap_kw": 28000.0}})
+        run(live, 2)
+        assert live.energy.violations == 0          # the energy module holds every block under the cap
+        assert live.demand_kw <= 28000.0 + 1.0
+
+
+def test_resync_makes_live_identical_to_baseline():
+    live, base = paired({"crusher_failure": True}, 1, 1)
+    live.set_scenarios({})
+    live.resync_from(base)
+    assert live.suffix == "" and live.dispatcher.sim is live and live.energy.sim is live
+    run(live, 1)
+    run(base, 1)
+    assert digest(live) == digest(base)
+    assert abs(live.mass_balance()) < 1e-6
