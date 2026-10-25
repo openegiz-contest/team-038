@@ -2,17 +2,15 @@
 
 ## Concept
 
-<!-- Written by the Team before the code: your own choice, a few sentences per answer. Everything else in the Submission follows from it. -->
+**Enterprise:** The pit-to-concentrator chain of an open-pit copper mine: three faces, the shovels and 227 t trucks that serve them, the haul-road network, the primary crusher, the ROM pad, the coarse ore stockpile, the concentrator feed, the waste dump, the diesel fuel bay and the site power supply. The flotation circuit itself is not modelled; the concentrator is the feed it receives and the copper it recovers.
 
-**Enterprise:** <!-- Which mining enterprise, or which part of it, the twin represents. -->
+**Users:** The shift dispatcher, the maintenance planner and the site energy engineer, looking at one control-room view.
 
-**Users:** <!-- Who uses the twin. -->
+**Decision:** Whether to accept an operating change, or to leave the mine as it is. A change is a failed crusher, a closed road, a shovel out of service, harder or lower-grade ore, a fuel shortage, a grid cap, or switching off dispatch, maintenance or energy management. The twin runs a second, identical mine that does not take the change. The decision is the difference in copper, plant feed, queue time, availability, kWh/t and diesel L/t.
 
-**Decision:** <!-- Which decision the twin helps them make. -->
+**Why this choice:** In this chain those quantities move together. Ore that cannot enter the crusher goes to the ROM pad, the coarse ore stockpile then drains, and the concentrator starves. A harder face slows the shovel and raises crusher kWh/t. A grid cap can be met by throttling the concentrator or by tripping it, and the two choices do not yield the same copper. The second mine uses the same seed and the same random draw for each machine, so the difference is the change, not luck.
 
-**Why this choice:** <!-- Why this enterprise, these users and this decision. -->
-
-**Real or fictional:** <!-- A real object: name it and give the sources of its numbers. A fictional one: which real objects it resembles and where its numbers come from. A real object with sourced numbers scores higher. -->
+**Real or fictional:** The site is fictional. It resembles a porphyry copper open pit with a gyratory primary crusher and a concentrator fed from a coarse ore stockpile. Truck and shovel sizes follow public class specification sheets (Caterpillar 793F, Komatsu PC5500, Caterpillar 6060, Liebherr R 9600). Copper grades, Bond work indices and recovery follow the open GeoMet dataset (Hoffimann et al. 2022, CC BY 4.0). Pit geometry, fleet size, stockpiles, the failure model and the grid cap are synthetic; every value and its source is listed in `twinvision/DATA_ASSUMPTIONS.md`.
 
 ## Team
 
