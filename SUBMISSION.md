@@ -1,5 +1,19 @@
 # SUBMISSION
 
+## Concept
+
+<!-- Written by the Team before the code: your own choice, a few sentences per answer. Everything else in the Submission follows from it. -->
+
+**Enterprise:** <!-- Which mining enterprise, or which part of it, the twin represents. -->
+
+**Users:** <!-- Who uses the twin. -->
+
+**Decision:** <!-- Which decision the twin helps them make. -->
+
+**Why this choice:** <!-- Why this enterprise, these users and this decision. -->
+
+**Real or fictional:** <!-- A real object: name it and give the sources of its numbers. A fictional one: which real objects it resembles and where its numbers come from. A real object with sourced numbers scores higher. -->
+
 ## Team
 
 | GitHub |
